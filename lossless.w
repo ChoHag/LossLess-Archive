@@ -29,12 +29,12 @@
 @s error return
 
 % And now for your unusual programming...
-                           
+
 @** Introduction. \LL/ is a programming language and environment
-similar to scheme. This document describes the implementation
-of a \LL/ runtime written in \CEE/ and \LL/ itself will be described
-elsewhere. In cases where the difference is clear \LL/ may be used
-when to refer the implementation.
+similar to scheme. This document describes the implementation of a
+\LL/ runtime written in \CEE/ and \LL/ itself will be described
+elsewhere. In unambiguous cases \LL/ may be used to refer specifically
+to the implementation.
 
 % TODO: URLs
 This code started off its life as \.{s9fes} by Nils M. Holm
@@ -108,8 +108,7 @@ compilers can make the previous paragraph a tissue of lies.
 jmp_buf Goto_Begin;
 jmp_buf Goto_Error;
 
-@ @d error(x,d) handle_error((x), NIL, (d))
-@<Function dec...@>=
+@ @<Function dec...@>=
 void handle_error (char *, cell, cell);
 void warn (char *, cell);
 
@@ -141,6 +140,7 @@ have strings, it has pointers to memory buffers that probably contain
 ASCII and might also happen to have a |NULL| in them somewhere.} when raised
 by an internal process or a |symbol| when raised at run-time.
 
+@d error(x,d) handle_error((x), NIL, (d))
 @c
 void
 handle_error(char *message,
@@ -202,10 +202,10 @@ this code \AM\ document, |cell| refers to each half of a |pair|.
 |cell| is not used to refer to a whole cons cell in order to avoid
 confusion.
 
-A |pair| in \LL/ is stored in 2 equally-sized areas of memory.
-On 64-bit x86 implementations, which are all I'm considering at the
+A |pair| in \LL/ is stored in 2 equally-sized areas of memory.  On
+64-bit x86 implementations, which are all I'm considering at the
 moment, each half is 32 bits wide. Each pair additionally has an 8
-byte tag associated with it, stored in a third area of memory.
+bit tag (1 byte) associated with it, stored in a third array.
 
 Internally a |pair| is represented by an offset into these memory
 areas. Negative numbers are therefore available for a few global
@@ -215,7 +215,7 @@ The |pair|'s tag is treated as a bitfield. The garbage collector
 uses two bits (|TAG_MARK| and |TAG_STATE|). The other 6 bits are
 used to identify what data is stored in the |cell|s.
 
-@d NIL         -1 /* Not |NULL|, but not |nil_p| either */
+@d NIL         -1 /* Not |NULL|, but not |nil_p|/{\it nil?} either */
 @d FALSE       -2 /* Yes, */
 @d TRUE        -3 /* really. */
 @d END_OF_FILE -4 /* stdio has |EOF| */
@@ -227,7 +227,7 @@ used to identify what data is stored in the |cell|s.
 @d TAG_STATE  0x40 /* GC state bit */
 @d TAG_ACARP  0x20 /* CAR is a pair */
 @d TAG_ACDRP  0x10 /* CDR is a pair */
-@d TAG_FORMAT 0x3f
+@d TAG_FORMAT 0x3f /* Mask lower 6 bits */
 @#
 @d HEAP_SEGMENT 0x8000
 @<Global var...@>=
@@ -576,7 +576,7 @@ from collection. I can't think of any better way of declaring it
 but hard-coding it right here.
 
 @c
-cell *ROOTS[] = { @<Protected Globals@> NULL };
+cell *ROOTS[] = { @<Protected Globals@>@t, @> NULL };
 
 @ @c
 void
@@ -587,7 +587,7 @@ mark(cell next)
         parent = prev = NIL;
         while (1) {
                 if (!(special_p(next) || mark_p(next))) {
-                        if (vector_p(next)) {         /* S0 -> S.1 */
+                        if (vector_p(next)) {         /* S0 $\to$ S.1 */
                                 mark_set(next);
                                 vector_cell(next) = next;
                                 if (vector_length(next) > 0) {
@@ -599,26 +599,26 @@ mark(cell next)
                                         next = prev;
                                 }
                         } else if (!acar_p(next)
-                                   && acdr_p(next)) { /* S0 -> S2 */
+                                   && acdr_p(next)) { /* S0 $\to$ S2 */
                                 prev = cdr(next);
                                 cdr(next) = parent;
                                 parent = next;
                                 next = prev;
                                 mark_set(parent);
-                        } else if (acar_p(next)) {    /* S0 -> S1 */
+                        } else if (acar_p(next)) {    /* S0 $\to$ S1 */
                                 prev = car(next);
                                 car(next) = parent;
                                 mark_set(next);
                                 parent = next;
                                 next = prev;
                                 state_set(parent);
-                        } else {                      /* S0 -> S1 */
+                        } else {                      /* S0 $\to$ S1 */
                                 mark_set(next);
                         }
                 } else {
                         if (null_p(parent))
                                 break;
-                        if (vector_p(parent)) {       /* S.1 -> S.1||done */
+                        if (vector_p(parent)) {       /* S.1 $\to$ S.1||done */
                                 i = vector_index(parent);
                                 if ((i + 1) < vector_length(parent)) {
                                         prev = vector_ref(parent, i + 1);
@@ -626,20 +626,20 @@ mark(cell next)
                                         vector_ref(parent, i) = next;
                                         next = prev;
                                         vector_index(parent) = i + 1;
-                                } else {              /* S.1 -> done */
+                                } else {              /* S.1 $\to$ done */
                                         state_clear(parent);
                                         prev = parent;
                                         parent = vector_ref(prev, i);
                                         vector_ref(prev, i) = next;
                                         next = prev;
                                 }
-                        } else if (state_p(parent)) { /* S1 -> S2 */
+                        } else if (state_p(parent)) { /* S1 $\to$ S2 */
                                 prev = cdr(parent);
                                 cdr(parent) = car(parent);
                                 car(parent) = next;
                                 state_clear(parent);
                                 next = prev;
-                        } else if (acdr_p(parent)) {  /* S2 -> done */
+                        } else if (acdr_p(parent)) {  /* S2 $\to$ done */
                                 prev = parent;
                                 parent = cdr(prev);
                                 cdr(prev) = next;
@@ -712,7 +712,8 @@ gc_vectors (void)
 }
 
 @ To ``unmark'' a |vector|, all the links in |VECTOR| back to the
-cell which refers to it (|vector_cell|) are set to |NIL|.
+cell which refers to it (|vector_cell|) are set to |NIL|. |gc| will
+re-set the link in any vectors that it can reach.
 
 @<Unmark all vectors@>=
 i = 0;
@@ -792,8 +793,8 @@ vms_pop (void)
 
 void
 vms_push (cell item)
-{
-        VMS = cons(item, VMS);
+{@+
+        VMS = cons(item, VMS);@+
 }
 
 cell
@@ -810,9 +811,9 @@ vms_set (cell item)
         car(VMS) = item;
 }
 
-@ The compiler stack is identical with the variable changed to
-|CTS|. Using the \CEE/ preprocessor for this would be unnecessarily
-inelegant so instead here is a delicious bowl of pasta.
+@ |CTS| is treated identically to |VMS|. Using the \CEE/ preprocessor
+for this would be unnecessarily inelegant so instead here is a
+delicious bowl of pasta.
 
 @d cts_clear() ((void) cts_pop())
 @d cts_reset() CTS = NIL
@@ -829,8 +830,8 @@ cts_pop ()
 
 void
 cts_push (cell item)
-{
-        CTS = cons(item, CTS);
+{@+
+        CTS = cons(item, CTS);@+
 }
 
 cell
@@ -1056,8 +1057,9 @@ cell Small_Int[UCHAR_MAX + 1];
 
 @ Even though the |Small_Int| objects are about to be created, in
 order to create objects garbage collection will happen and assume
-that |Small_Int| has already been initialised. This is silly but
-I'm leaving it alone until I have a better memory model.
+that |Small_Int| has already been initialised and attempt to protect
+data which don't exist from collection. This is a silly solution
+but I'm leaving it alone until I have a better memory model.
 
 @<Pre-init...@>=
 for (int i = 0; i < 256; i++)
@@ -1172,7 +1174,7 @@ list_reverse_m (cell    l,
 @*1 Environments. In order to associate a value with a |symbol|
 (a variable) they are paired together in an |environment|.
 
-Like an onion or an ogre\footnote{$^1$}{Or a cake}, an |environment|
+Like an onion or an ogre\footnote{$^1$}{Or a cake.}, an |environment|
 has layers. The top layer is both the current layer and the current
 |environment|. The bottom layer is the root |environment| |Root|.
 
@@ -1224,7 +1226,7 @@ env_search (cell haystack,
 @ To set a variable's value the |environment|'s top layer is first
 searched to see if the |symbol| is already bound. An |error| is
 raised if the symbol is bound (when running on behalf of {\it
-define!}) or not bound (when running on behalf of {\it set!}).
+define!\/}) or not bound (when running on behalf of {\it set!\/}).
 
 @c
 void
@@ -1241,12 +1243,14 @@ env_set (cell e,
 
 @ Updating an already-bound variable means removing the existing
 binding from the |environment| and inserting the new binding. During
-the walk over the layer, |t| is one pair ahead of the pair being
+the walk over the layer |t| is one pair ahead of the pair being
 considered so that when |name| is found |t|'s |cdr| can be changed,
-snipping the old binding out.
+snipping the old binding out, so the first pair is checked specially.
 @<Mutate if bound@>=
-if (null_p(env_layer(e)) || caar(env_layer(e)) == name)
+if (null_p(env_layer(e)))
         error(ERR_UNBOUND, name);
+if (caar(env_layer(e)) == name)
+        env_layer(e) = cons(ass, cdr(env_layer(e)));
 for (t = env_layer(e); !null_p(cdr(t)); t = cdr(t)) {
         if (caadr(t) == name) {
                 cdr(t) = cddr(t);
@@ -1257,16 +1261,13 @@ for (t = env_layer(e); !null_p(cdr(t)); t = cdr(t)) {
 error(ERR_UNBOUND, name);
 
 @ The case is simpler if the |name| must {\bf not} be bound already
-as the new binding can be prepended to the layer after searching.
+as the new binding can be prepended to the layer after searching with
+no need for special cases.
 @<Mutate if unbound@>=
-if (null_p(env_layer(e)))
-        env_layer(e) = cons(ass, NIL);
-else {
-        for (t = cdr(env_layer(e)); !null_p(t); t = cdr(t))
-                if (caar(t) == name)
-                        error(ERR_BOUND, name);
-        env_layer(e) = cons(ass, env_layer(e));
-}
+for (t = env_layer(e); !null_p(t); t = cdr(t))
+        if (caar(t) == name)
+                error(ERR_BOUND, name);
+env_layer(e) = cons(ass, env_layer(e));
 
 @ Values are passed to functions on the stack. |env_lift_stack|
 moves these values from the stack into an |environment|.
@@ -1286,9 +1287,8 @@ env_lift_stack (cell e,
                 if (pair_p(formals)) {
                         name = car(formals);
                         formals = cdr(formals);
-                } else {
+                } else
                         name = formals; /* last time around */
-                }
                 value = rts_pop(1);
                 if (!null_p(name)) {
                         ass = cons(name, cons(value, NIL));
@@ -1310,7 +1310,7 @@ is only a description of their backing stores.
 They store the same data in identical containers; the difference
 is in how they're used.
 
-The data required to define a |closure| are a program the
+The data required to define a |closure| are a program \AM\ the
 |environment| to run it in. A |closure| in \LL/ also contains
 the formals given in the |lambda| or |vov| expression that
 was used to define it.
@@ -1325,8 +1325,8 @@ $$(OPERATIVE\ \langle formals \rangle\ \langle environment \rangle\
 \langle code \rangle\ \langle pointer \rangle)$$
 
 However the |environment|, code and pointer are never referred to
-directly until the closure is unpicked by |OP_APPLY|/|OP_APPLY_TAIL|,
-instead the objects effectively look like this:
+directly until the closure is unpicked by |OP_APPLY|/|OP_APPLY_TAIL|.
+Instead the objects effectively look like this:
 
 $$(A\vert O\ \langle formals\rangle\ .\ \langle opaque\_closure\rangle)$$
 
@@ -1377,14 +1377,14 @@ environment filled with an association |pair| for each one.
 @q This is littered with @@+ so it appears on one line. The final @@+@>
 @q should be @@& but that causes a literal @@& to appear in the output@>
 primitive COMPILER[] =@+ {@+
-        @<List of opcode primitives@>@+
+        @<List of opcode primitives@>@t,@>@+
         { NULL, NULL }@+ }@+;
 
 @** Virtual Machine. This implementation of \LL/ compiles user
 source code to an internal bytecode representation which is then
 executed sequentially by a virtual machine (VM).
 
-Additionally to the two stacks already mentioned, the VM maintains
+Additionally to the myriad stacks already mentioned, the VM maintains
 (global!) state primarily in 6 registers. Two of these are simple
 flags (booleans) which indicate whether interpretation should
 continue.
@@ -1406,9 +1406,8 @@ The other four registers represent the computation.
 write this register to do their work. This is where the final result
 of computation will be found.
 
-\point 4. |Env| holds The current |environment|. Changing this
-is the key to implementing |closure|s. Note that the |environment|
-is not wrapped in an |atom| header when stored in this register.
+\point 4. |Env| holds the current |environment|. Changing this
+is the key to implementing |closure|s.
 
 \point 5. |Prog| is the compiled bytecode of the currently running
 computation, a |vector| of VM opcodes with their in-line arguments.
@@ -1456,9 +1455,9 @@ vm_init (void)
         Env = Root;
 }
 
-@ To complete initialisation call |vm_clear| to ready the VM for
-running another program. Note that |vm_clear| does {\bf not} reset
-|Env| (or |Acc|), which is what allows state to be maintained between
+@ To complete initialisation |vm_clear| is called to ready the VM
+for running another program. |vm_clear| does {\bf not} reset |Env|
+(or |Acc|), which is what allows state to be maintained between
 instructions in the \.{REPL}, for example.
 
 @c
@@ -1474,13 +1473,13 @@ appending a |frame| header to the stack. A |frame| consists of any
 work-in-progress items on the stack followed by a fixed-size header.
 A |frame|'s header captures the state of computation at the time
 it's created which is what lets another subroutine run and then
-return. The |frame| header contains 4 objects: |Ip| |Prog| |Env|
-|Fp|.
+return. The |frame| header contains 4 objects: $\ll$|Ip| |Prog|
+|Env| |Fp|$\gg$.
 
-|Fp| is another register which points into the stack to the current
-|frame|'s header. It is saved when entering a |frame| and its
-value set to that of the stack pointer |RTSp|. |RTSp| is restored to
-the saved value when returning from a |frame|.
+|Fp| is a quasi-register which points into the stack to the current
+|frame|'s header. It's saved when entering a |frame| and its value
+set to that of the stack pointer |RTSp|. |RTSp| is restored to the
+saved value when returning from a |frame|.
 
 @d FRAME_HEAD 4
 @d frame_ip(f)         rts_ref_abs((f) + 1)
@@ -1522,8 +1521,8 @@ frame_enter (cell e,
 @ Leaving a |frame| means restoring the registers that were saved
 in it by |frame_push| and then returning |RTSp| and |Fp| to their
 previous values; |Fp| from the header and |RTSp| as the current
-|Fp| minus the |frame| header in case there were any in-progress
-items on top of the stack previously.
+|Fp| minus the |frame| header in case there were previously any
+in-progress items on top of the stack.
 
 @c
 void
@@ -1790,10 +1789,11 @@ are for working with the macro expander.
 In \LL/ this syntax is unnecessary thanks to its first-class
 operatives but it's helpful so it's been retained. To differentiate
 between having parsed the syntactic form of these operators (eg.
-\qo\.{'foo}\qc) and their symbolic form (eg. \qo\.{(quote foo)}\qc)
-an otherwise ordinary |pair| with the operative's |symbol| in
-the |car| is created with the tag |FORMAT_SYNTAX|. These |syntax|
-\.{object}s are treated specially by the compiler and the writer.
+\qo\.{'foo}\qc\ or \qo\.{'(bar baz)}\qc) and their symbolic form
+(eg. \qo\.{(quote . foo)}\qc\ or \qo\.{(quote bar baz)}\qc) an
+otherwise ordinary |pair| with the operative's |symbol| in the |car|
+is created with the tag |FORMAT_SYNTAX|. These |syntax| \.{object}s
+are treated specially by the compiler and the writer.
 
 @<Reader...@>=
 case '\'':
@@ -1840,8 +1840,8 @@ the closing delimiter \qclosepar/ or \qclosebra/.
 
 A pointer to the head of the |list| is saved and another pointer
 to its tail, |write|, is updated and used to insert the next object
-after it is read, avoiding the need to reverse the |list| when
-it's finished.
+after it's been read, avoiding the need to reverse the |list| at
+the end.
 
 @c
 cell
@@ -1900,25 +1900,20 @@ is created instead of a normal s-expression so that the style in
 which it's written out will be in the same that was read in.
 
 @<Read dotted pair@>=
-if (count < 1 || delimiter != READ_CLOSE_PAREN) {
+if (count < 1 || delimiter != READ_CLOSE_PAREN)
         /* There must be at least one item already and we must be
            parsing a \.{list}. */
-        cts_pop();
         error(ERR_ARITY_SYNTAX, NIL);
-}
-next = read_form(); /* Check that the next `form' isn't one of \qdot/,
-                       \qclosepar/ or \qclosebra/ */
-if (special_p(next) && next <= READ_SPECIAL) {
-        cts_pop();
+next = read_form();
+if (special_p(next) && next <= READ_SPECIAL)
+        /* Check that the next `form' isn't one of \qdot/, \qclosepar/
+           or \qclosebra/ */
         error(ERR_ARITY_SYNTAX, NIL);
-}
 cdr(write) = atom(sym(SYNTAX_DOTTED), next, FORMAT_SYNTAX);
 next = read_form();
-if (next != delimiter) { /* Check that the next `form' is really the
-                            closing delimiter */
-        cts_pop();
+if (next != delimiter)@t\hbox to 42mm{}@>
+        /* Check that the next `form' is really the closing delimiter */
         error(ERR_ARITY_SYNTAX, NIL);
-}
 break;
 
 @ If it's not a |list| or a |vector| (or a |string| (\qstring/),
@@ -1959,7 +1954,7 @@ read_number (void)
         r = atol(buf);
         if (r > INT_MAX || r < INT_MIN)
                 error(ERR_UNIMPLEMENTED, NIL);
-        return int_new((int) r);
+        return int_new(r);
 }
 
 @ Although \LL/ specifices (read: would specify) that there are no
@@ -1986,9 +1981,9 @@ recognised by |read_form|).
 |symbol|.
 
 nb. This means that the following otherwise syntactic characters
-are permitted in a symbol provided they do not occupy the first
-byte: \qdot/, \qunquote/, \qquote/, \qquasi/, \qspecial/ and
-\qsymbol/. You probably shouldn't do that though.
+{\it are} permitted in a symbol provided they do not occupy the
+first byte: \qdot/, \qunquote/, \qquote/, \qquasi/, \qspecial/ and
+\qsymbol/. You probably shouldn't do that lightly though.
 
 \point \* If the first character of a |symbol| is \qo\.{-}\qc\
 or \qo\.{+}\qc\ then it cannot be followed a numeric digit.
@@ -2015,7 +2010,7 @@ read_symbol (void)
         s = CHUNK_SIZE;
         @<Read the first two bytes to check for a number@>@;
         while (1) { @<Read bytes until an invalid or terminating character@>@; }
-        buf[i] = '\0'; /* |NULL|-terminate the \CEE/ string */
+        buf[i] = '\0'; /* |NULL|-terminate the \CEE/-`string' */
         r = sym(buf);
         free(buf);
         return r;
@@ -2071,7 +2066,7 @@ if (i == s) {
         /* Enlarge |buf| if it's now full (this will also allow the
            |NULL|-terminator to fit) */
         nbuf = realloc(buf, s *= 2);
-        if (!nbuf) {
+        if (nbuf == NULL) {
                 free(buf);
                 error(ERR_OOM, NIL);
         }
@@ -2170,7 +2165,7 @@ write_syntax(cell sexp,
         return btrue;
 }
 
-@*1 Environment Objects. An |environment| prints its own layers
+@*1 Environment Objects. An |environment| prints its own layer
 and then the layers above it.
 
 @c
@@ -2191,9 +2186,10 @@ write_environment(cell sexp,
         return btrue;
 }
 
-@*1 Sequential Objects. The routines for a |list| and |vector|
-are more or less the same -- write each item in turn with whitespace
+@*1 Sequential Objects. The routines for a |list| and |vector| are
+more or less the same -- write each item in turn with whitespace
 after each form but the last, with the appropriate delimiters.
+|list|s also need to deal with being improper.
 
 @c
 boolean
@@ -2252,7 +2248,7 @@ write_form (cell sexp,
         if (depth > WRITER_MAX_DEPTH)
                 error(ERR_RECURSION, NIL);
         if (undefined_p(sexp))
-                printf("#><");
+                printf("#><"); /* nothing should ever print this */
         else if (eof_p(sexp))
                 printf("#<eof>");
         else if (false_p(sexp))
@@ -2283,8 +2279,8 @@ or the implementation of the opcodes that the compiler will turn
 This is the first of the Big Boring Lists. The opcodes that the
 virtual machine can perform must be declared before anything can
 be said about them. They take the form of an |enum|, this one
-unnamed. This list is sorted in alphabetical order for want of
-anything else.
+unnamed. This list is sorted alphabetically for want of anything
+else.
 
 Also defined here are |fetch| and |skip| which |opcode| implementations
 will use to obtain their argument(s) from |Prog| or advance |Ip|,
@@ -2391,7 +2387,7 @@ case OP_PAIR_P:
         skip(1);
         break;
 
-@ Cons cell mutators.
+@ Cons cell mutators clear take an item from the stack and clear |Acc|.
 @<Opcode imp...@>=
 case OP_SET_CAR_M:
         car(rts_pop(1)) = Acc;
@@ -2410,7 +2406,7 @@ the stack, or remove the top stack \.{object} into |Acc|, respectively.
 |OP_SWAP| swaps the \.{object} in |Acc| with the \.{object} on top
 of the stack.
 
-|OP_NIL| pushes a new |NIL| \.{object} onto the stack.
+|OP_NIL| pushes a new |NIL| \.{object} onto the stack, bypassing |Acc|.
 
 @<Opcode imp...@>=
 case OP_POP:
@@ -2432,8 +2428,8 @@ case OP_NIL:
         skip(1);
         break;
 
-@* Environments. TODO: I can't remember which of these are really
-necesessary. I know that |OP_ENV_QUOTE| is
+@* Environments. Get or mutate |environment| objects. |OP_ENV_SET_ROOT_M|
+isn't used yet.
 
 @<Opcode imp...@>=
 case OP_ENVIRONMENT_P:
@@ -2480,17 +2476,17 @@ arguments---making it useful---although in some cases a closure may
 work with global state or be idempotent.
 
 In order to apply the arguments (if any) to the |closure| it must
-be entered, which |OP_APPLY| and |OP_APPLY_TAIL| do. |OP_APPLY_TAIL|
-works identically to |OP_APPLY| then it consumes the previous stack
-frame, which allows for {\it proper tail recursion} with support
-from the compiler.
+be entered by one of the opcodes |OP_APPLY| or |OP_APPLY_TAIL|.
+|OP_APPLY_TAIL| works identically to |OP_APPLY| and then consumes
+the stack frame which |OP_APPLY| created, allowing for {\it proper
+tail recursion} with further support from the compiler.
 
 @<Opcode imp...@>=
 case OP_APPLY:
-        @<Enter a |closure|@>
+        @<Enter a |closure|@>@;
         break;
 case OP_APPLY_TAIL:
-        @<Enter a |closure|@>
+        @<Enter a |closure|@>@;
         frame_consume();
         break;
 case OP_RETURN:
@@ -2561,13 +2557,14 @@ case OP_RUN_THERE:
 to writing it. The compiler is not advanced in any way but it is a
 little unusual. Due to the nature of first-class operatives, how
 to compile any expression can't be known until the combinator has
-been evaluated (compiled and interpreted) to distinguish an applicative
-from an operative. I don't know if this qualifies it for a {\it
-Just In-Time} compiler; I think {\it Finally Able-To} is more
-suitable.
+been evaluated (read: compiled and then interpreted) in order to
+distinguish an applicative from an operative so that it knows whether
+to evaluate the arguments in the expression. I don't know if this
+qualifies it for a {\it Just-In-Time} compiler; I think {\it
+Finally-Able-To} is more suitable.
 
 The compiler uses a small set of \CEE/ macros which grow and fill
-|Compilation|---a |vector| holding the compilation in progress.
+|Compilation|---a |vector| holding the compilation in-progress.
 
 @d ERR_COMPILE_DIRTY "compiler"
 @d ERR_UNCOMBINABLE "uncombinable"
@@ -2664,9 +2661,9 @@ compile (cell source)
         return r;
 }
 
-@ |compile_main| is used during initialisation to ``compile'' the
-bytecode $\ll$|OP_COMPILE|\ |OP_RUN|\ |OP_HALT|$\gg$ which is the
-program installed initially into the virtual machine.
+@ |compile_main| is used during initialisation to build the bytecode
+$\ll$|OP_COMPILE|\ |OP_RUN|\ |OP_HALT|$\gg$ which is the program
+installed initially into the virtual machine.
 
 @c
 cell
@@ -2730,11 +2727,11 @@ if (compiler_p(combiner)) {
         error(ERR_UNCOMBINABLE, combiner);
 }
 
-@ If the combiner (|sexp|'s |car|) is a |syntax| object then
-it represents the result of parsing (for example) \qo\.{'(expression)}\qc\
-into \qo\.{(quote (expression))}\qc\ and it must always mean the
-{\it real} |quote| operator, so |syntax| combiners are always
-looked for directly (and only) in |Root|.
+@ If the combiner (|sexp|'s |car|) is a |syntax| object then it
+represents the result of parsing (for example) \qo\.{'(expression)}\qc\
+into \qo\.{(quote expression)}\qc\ and it must always mean the {\it
+real} |quote| operator, so |syntax| combiners are always looked for
+directly (and only) in |Root|.
 
 @<Search |Root|...@>=
 if (syntax_p(sexp)) {
@@ -2828,9 +2825,9 @@ arity_next (cell    op,
                         cts_push(UNDEFINED);
                         return NIL;
                 }
-        } else if (!pair_p(more)) {
+        } else if (!pair_p(more))@/
                 arity_error(ERR_ARITY_SYNTAX, op, args);
-        } else if (last_p && !null_p(cdr(more))) {
+        else if (last_p && !null_p(cdr(more))) {
                 if (operative_p(op) && pair_p(cdr(more)))
                         arity_error(ERR_ARITY_EXTRA, op, args);
                 else
@@ -2915,14 +2912,15 @@ compile_lambda (cell op,
         emitq(formals); /* push |formals| onto the stack */
         emitop(OP_PUSH);
         emitop(OP_LAMBDA); /* create the |applicative| */
-        begin_address = comefrom(); /* start address; argument to opcode */
+        begin_address = comefrom(); /* start address; argument to
+                                       |OP_LAMBDA| */
         emitop(OP_JUMP); /* jump over the compiled |closure| body */
         comefrom_end = comefrom();
         patch(begin_address, int_new(Here));
         compile_list(op, body, tail_p); /* compile the code that entering
                                            the |closure| will interpret */
-        emitop(OP_RETURN); /* return from the run-time |closure| */
-        patch(comefrom_end, int_new(Here)); /* finish building the |closure| */
+        emitop(OP_RETURN); /* returns from the |closure| at run-time */
+        patch(comefrom_end, int_new(Here));
 }
 
 @ If the |formals| given in the |lambda| expression are not in fact
@@ -3169,7 +3167,7 @@ emit(int_new(3));
 emit(combiner);
 
 @* Conditionals (|if|). Although you could define a whole language
-with just |lambda| and |vov|\footnote{$^1$}{in fact I think
+with just |lambda| and |vov|\footnote{$^1$}{In fact I think
 conditionals can be achieved in both somehow, so you only need one.}
 that way lies Church Numerals and other madness, so we will define
 the basic conditional, |if|.
