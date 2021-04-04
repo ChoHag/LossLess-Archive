@@ -1,0 +1,22 @@
+# Editor detritus and backups
+*~
+*.bak
+*.new
+*.old
+*.orig
+.*.sw[pon]
+.dir-locals.el
+.#*
+\#*
+
+tmp/
+*.core
+*.idx
+*.log
+*.scn
+*.toc
+lossless
+lossless.c
+lossless.pdf
+lossless.tex
+

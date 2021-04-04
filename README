@@ -1,0 +1,12 @@
+LossLess is written in C using the Literate Programming technique
+developed (initially) by Donald E. Knuth. It's my first literate project
+so don't expect a lot.
+
+Literate source code intersperces prose with source code and must be
+processed by CTANGLE, part of CWEB, to produce compilable C source. Get
+it from https://www-cs-faculty.stanford.edu/~knuth/cweb.html or your
+distribution's packages/ports repository. For Debian try
+texlive-binaries. OpenBSD includes it in texlive_base.
+
+nb. TeX is *not* required to compile CWEB nor is it required to compile
+the LossLess binary.
