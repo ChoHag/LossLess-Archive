@@ -109,7 +109,7 @@ jmp_buf Goto_Begin;
 jmp_buf Goto_Error;
 
 @ @<Function dec...@>=
-void handle_error (char *, cell, cell);
+void handle_error (char *, cell, cell) __dead;
 void warn (char *, cell);
 
 @ When the initialisation has finished \LL/ sets the |Goto_Begin|
@@ -618,7 +618,7 @@ mark(cell next)
                 } else {
                         if (null_p(parent))
                                 break;
-                        if (vector_p(parent)) {       /* S.1 $\to$ S.1||done */
+                        if (vector_p(parent)) {       /* S.1 $\to$ S.1/done */
                                 i = vector_index(parent);
                                 if ((i + 1) < vector_length(parent)) {
                                         prev = vector_ref(parent, i + 1);
@@ -1062,11 +1062,11 @@ data which don't exist from collection. This is a silly solution
 but I'm leaving it alone until I have a better memory model.
 
 @<Pre-init...@>=
-for (int i = 0; i < 256; i++)
+for (i = 0; i < 256; i++)
         Small_Int[i] = NIL;
 
 @ @<Global init...@>=
-for (int i = SCHAR_MIN; i <= SCHAR_MAX; i++)@/
+for (i = SCHAR_MIN; i <= SCHAR_MAX; i++)@/
         Small_Int[(unsigned char) i] = int_new_imp(i, NIL);
 
 @ As with |vector|s, |int_new| checks whether it should return
@@ -2093,7 +2093,7 @@ don't have much to say.
 @c
 boolean
 write_applicative(cell sexp,
-                  int depth)
+                  int depth __unused)
 {
         if (!applicative_p(sexp))
                 return bfalse;
@@ -2103,7 +2103,7 @@ write_applicative(cell sexp,
 
 boolean
 write_compiler(cell sexp,
-               int depth)
+               int depth __unused)
 {
         if (!compiler_p(sexp))
                 return bfalse;
@@ -2113,7 +2113,7 @@ write_compiler(cell sexp,
 
 boolean
 write_operative(cell sexp,
-                int depth)
+                int depth __unused)
 {
         if (!operative_p(sexp))
                 return bfalse;
@@ -2126,7 +2126,7 @@ write_operative(cell sexp,
 @c
 boolean
 write_integer(cell sexp,
-              int depth)
+              int depth __unused)
 {
         if (!integer_p(sexp))
                 return bfalse;
@@ -2136,7 +2136,7 @@ write_integer(cell sexp,
 
 boolean
 write_symbol(cell sexp,
-             int depth)
+             int depth __unused)
 {
         int i;
         if (!symbol_p(sexp))
@@ -2573,7 +2573,7 @@ The compiler uses a small set of \CEE/ macros which grow and fill
 @d emitop(o)  emit(int_new(o))
 @d emitq(o)   do@+ { @+emitop(OP_QUOTE);@+ emit(o);@+ } while (0) /* \CEE/... */
 @d patch(i,v) (vector_ref(Compilation, (i)) = (v))
-@d undot(p)   ((syntax_p(p) && car(p) == Sym_Dotted) ? cdr(p) : p)
+@d undot(p)   ((syntax_p(p) && car(p) == Sym_Dotted) ? cdr(p) : (p))
 @<Global var...@>=
 int Here = 0;
 cell Compilation = NIL;
@@ -2906,8 +2906,10 @@ compile_lambda (cell op,
 {
         cell body, in, formals, f;
         int begin_address, comefrom_end;
-        body = undot(arity(op, args, 1, 1));
-        formals = undot(cts_pop());
+        body = arity(op, args, 1, 1);
+        body = undot(body);
+        formals = cts_pop();
+        formals = undot(formals);
         if (!symbol_p(formals)) { @<Process lambda formals@> }
         emitq(formals); /* push |formals| onto the stack */
         emitop(OP_PUSH);
@@ -2932,14 +2934,14 @@ the |syntax| wrapper is removed.
 cts_push(f = cons(NIL, NIL));
 in = formals;
 while (pair_p(in)) {
-        if (!symbol_p(car(in)))
+        if (!symbol_p(car(in)) && !null_p(car(in)))
                 arity_error(ERR_ARITY_SYNTAX, op, args);
         cdr(f) = cons(car(in), NIL);
         f = cdr(f);
         in = undot(cdr(in));
 }
 if (!null_p(in)) {
-        if (!symbol_p(in))
+        if (!symbol_p(in) && !null_p(in))
                 arity_error(ERR_ARITY_SYNTAX, op, args);
         cdr(f) = in;
 }
@@ -3083,8 +3085,10 @@ compile_vov (cell op,
         cell a = NIL;
         cell c = NIL;
         cell e = NIL;
-        body = undot(arity(op, args, 1, 1));
-        formals = undot(cts_pop());
+        body = arity(op, args, 1, 1);
+        body = undot(body);
+        formals = cts_pop();
+        formals = undot(formals);
         @<Scan operative informals@>@;
         emitop(OP_NIL); /* push formals onto the stack */
         emitq(c);@+ emitop(OP_CONS);@+ emitop(OP_PUSH);
@@ -3188,7 +3192,7 @@ compile_conditional (cell op,
         compile_expression(condition, 0);
         emitop(OP_JUMP_FALSE);
         jump_false = comefrom();
-        compile_expression(consequent, undefined_p(alternate) ? tail_p : 0);
+        compile_expression(consequent, tail_p);
         emitop(OP_JUMP);
         jump_true = comefrom();
         patch(jump_false, int_new(Here));
@@ -3207,7 +3211,7 @@ described by the second to execute the program in the first.
 void
 compile_eval (cell op,
               cell args,
-              boolean tail_p)
+              boolean tail_p __unused)
 {
         cell more, sexp, eenv;
         more = arity(op, args, 1, 1);
@@ -3237,7 +3241,7 @@ for mutation.
 void
 compile_cons (cell op,
               cell args,
-              boolean tail_p)
+              boolean tail_p __unused)
 { /* pattern 0; |arity==(O,O)| */
         cell ncar, ncdr;
         arity(op, args, 2, 0);
@@ -3252,7 +3256,7 @@ compile_cons (cell op,
 void
 compile_car (cell op,
              cell args,
-             boolean tail_p)
+             boolean tail_p __unused)
 { /* pattern 1; |arity=(OP_PAIR_P)| */
         int comefrom_pair_p;
         arity(op, args, 1, 0);
@@ -3272,7 +3276,7 @@ compile_car (cell op,
 void
 compile_cdr (cell op,
              cell args,
-             boolean tail_p)
+             boolean tail_p __unused)
 {
         int comefrom_pair_p;
         arity(op, args, 1, 0);
@@ -3292,7 +3296,7 @@ compile_cdr (cell op,
 void
 compile_null_p (cell op,
                 cell args,
-                boolean tail_p)
+                boolean tail_p __unused)
 { /* pattern 2 = predicate */
         arity(op, args, 1, 0);
         compile_expression(cts_pop(), 0);
@@ -3302,7 +3306,7 @@ compile_null_p (cell op,
 void
 compile_pair_p (cell op,
                 cell args,
-                boolean tail_p)
+                boolean tail_p __unused)
 {
         arity(op, args, 1, 0);
         compile_expression(cts_pop(), 0);
@@ -3312,7 +3316,7 @@ compile_pair_p (cell op,
 void
 compile_set_car_m (cell op,
                    cell args,
-                   boolean tail_p)
+                   boolean tail_p __unused)
 { /* pattern 3 = |arity=(OP_PAIR_P, O)| */
         cell value, object;
         int goto_pair_p;
@@ -3327,13 +3331,14 @@ compile_set_car_m (cell op,
         emitq(Sym_ERR_UNEXPECTED);
         emitop(OP_ERROR);
         compile_expression(value, bfalse);
+        patch(goto_pair_p, int_new(Here));
         emitop(OP_SET_CAR_M);
 }
 
 void
 compile_set_cdr_m (cell op,
                    cell args,
-                   boolean tail_p)
+                   boolean tail_p __unused)
 {
         cell value, object;
         int goto_pair_p;
@@ -3348,13 +3353,14 @@ compile_set_cdr_m (cell op,
         emitq(Sym_ERR_UNEXPECTED);
         emitop(OP_ERROR);
         compile_expression(value, bfalse);
+        patch(goto_pair_p, int_new(Here));
         emitop(OP_SET_CDR_M);
 }
 
 void
 compile_set_m (cell op,
                cell args,
-               boolean tail_p)
+               boolean tail_p __unused)
 { /* pattern 4, |arity = (OP_ENV_P #<> symbol?)| */
         cell env, name, value;
         int goto_env_p;
@@ -3381,7 +3387,7 @@ compile_set_m (cell op,
 void
 compile_define_m (cell op,
                   cell args,
-                  boolean tail_p)
+                  boolean tail_p __unused)
 {
         cell env, name, value;
         int goto_env_p;
@@ -3408,7 +3414,7 @@ compile_define_m (cell op,
 void
 compile_env_root (cell op,
                   cell args,
-                  boolean tail_p)
+                  boolean tail_p __unused)
 { /* pattern 5 = no args */
         arity(op, args, 0, bfalse);
         emitop(OP_ENV_ROOT);
@@ -3417,16 +3423,16 @@ compile_env_root (cell op,
 void
 compile_env_current (cell op,
                      cell args,
-                     boolean tail_p)
+                     boolean tail_p __unused)
 {
         arity(op, args, 0, bfalse);
         emitop(OP_ENV_QUOTE);
 }
 
 void
-compile_quote (cell op,
+compile_quote (cell op __unused,
                cell args,
-               boolean tail_p)
+               boolean tail_p __unused)
 { /* pattern 6 = unique */
         emitq(args);
 }
@@ -3447,7 +3453,7 @@ int test_main (int, char **);
 #ifdef LL_TEST
 int
 main (int    argc,
-      char **argv)
+      char **argv __unused)
 {
         vm_init();
         if (argc > 1)
@@ -3496,7 +3502,7 @@ test_main (int    argc,
 #else
 int
 main (int    argc,
-      char **argv)
+      char **argv __unused)
 #endif
 {
         vm_init();
