@@ -176,7 +176,7 @@ handle_error(char *message,
 control to |handle_error| (and never returns).
 
 @<Opcode implementations@>=
-case OP_ERROR:
+case OP_ERROR:@/
         handle_error(NULL, Acc, rts_pop(1));
         break; /* superfluous */
 
@@ -497,7 +497,7 @@ vector_new_imp (int  size,
         vector_cell(r) = r;
         vector_index(r) = 0;
         if (fill_p)
-                for (i = VECTOR_HEAD; i <= size + (VECTOR_HEAD - 1); i++)
+                for (i = VECTOR_HEAD; i <= size + (VECTOR_HEAD - 1); i++)@/
                         vector_ref(r, i) = fill;
         return r;
 }
@@ -550,7 +550,7 @@ vector_sub (cell src,
         dst = vector_new_imp(dstto, 0, 0);
         for (i = 0; i < dstfrom; i++)
                 vector_ref(dst, i) = fill;
-        for (i = srcfrom; i < srcto; i++)
+        for (i = srcfrom; i < srcto; i++)@/
                 vector_ref(dst, (dstfrom - srcfrom) + i) = vector_ref(src, i);
         for (i = dstfrom + copy; i < dstto; i++)
                 vector_ref(dst, i) = fill;
@@ -564,8 +564,6 @@ the whole pool is scanned and any |pair|s which aren't marked are
 added to the free list.
 
 % TODO: break this algorithm down into explained pieces.
-
-% TODO: -> gives some funky formatting
 
 @<Function dec...@>=
 int gc (void);
@@ -1085,7 +1083,7 @@ int_new_imp (int  value,
 cell
 int_new (int value)
 {
-        if (value >= SCHAR_MIN || value <= SCHAR_MAX)
+        if (value >= SCHAR_MIN || value <= SCHAR_MAX)@/
                 return Small_Int[(unsigned char) value];
         return int_new_imp(value, NIL);
 }
@@ -1214,12 +1212,10 @@ env_search (cell haystack,
             cell needle)
 {
         cell n;
-        for (; !null_p(haystack); haystack = env_parent(haystack)) {
-                for (n = env_layer(haystack); !null_p(n); n = cdr(n)) {
+        for (; !null_p(haystack); haystack = env_parent(haystack))
+                for (n = env_layer(haystack); !null_p(n); n = cdr(n))
                         if (caar(n) == needle)
                                 return cadar(n);
-                }
-        }
         return UNDEFINED;
 }
 
@@ -1249,7 +1245,7 @@ snipping the old binding out, so the first pair is checked specially.
 @<Mutate if bound@>=
 if (null_p(env_layer(e)))
         error(ERR_UNBOUND, name);
-if (caar(env_layer(e)) == name)
+if (caar(env_layer(e)) == name)@/
         env_layer(e) = cons(ass, cdr(env_layer(e)));
 for (t = env_layer(e); !null_p(cdr(t)); t = cdr(t)) {
         if (caadr(t) == name) {
@@ -1287,8 +1283,9 @@ env_lift_stack (cell e,
                 if (pair_p(formals)) {
                         name = car(formals);
                         formals = cdr(formals);
-                } else
-                        name = formals; /* last time around */
+                } else {@+
+                        name = formals;@+
+                }
                 value = rts_pop(1);
                 if (!null_p(name)) {
                         ass = cons(name, cons(value, NIL));
@@ -1537,7 +1534,7 @@ frame_leave (void)
         Fp = prev;
 }
 
-@*1 Tail recursion. {\bf TODO}
+@*1 Tail Recursion. {\bf TODO}
 
 This is a straight copy of what I wrote in perl which hasn't been
 used there. Looks about right. Might work.
@@ -1554,7 +1551,7 @@ frame_consume (void)
         frame_set_ip(src,   frame_ip(dst));
         frame_set_fp(src,   frame_fp(dst));
         /* Move the active frame over the top of the previous one */
-        for (i = 1; i <= FRAME_HEAD; i++)
+        for (i = 1; i <= FRAME_HEAD; i++)@/
                 rts_set_abs(dst + i, rts_ref_abs(src + i));
         rts_clear(src - dst);
         Fp -= src - dst;
@@ -1871,10 +1868,9 @@ read_list (cell delimiter)
         }
         Read_Level--;
         r = cdr(cts_pop());
-        if (delimiter == READ_CLOSE_BRACKET)
+        if (delimiter == READ_CLOSE_BRACKET)@/
                 return vector_new_list(r, count);
-        else
-                return count ? r : NIL;
+        return count ? r : NIL;
 }
 
 @ |read_form| is expected to return an s-expression or raise an
@@ -1891,8 +1887,8 @@ else if (next == READ_CLOSE_BRACKET
                 || next == READ_CLOSE_PAREN) {
         if (next != delimiter)
                 error(ERR_ARITY_SYNTAX, NIL);
-        else break; /* finished */
-} else if (next == READ_DOT) { @<Read dotted pair@>@; }
+        break;
+} else if (next == READ_DOT) { @<Read dotted pair@> }
 
 @ Encountering a \qdot/ requires more special care than it deserves,
 made worse because if a |list| is dotted, a |syntax| \.{object}
@@ -2009,7 +2005,7 @@ read_symbol (void)
                 error(ERR_OOM, NIL);
         s = CHUNK_SIZE;
         @<Read the first two bytes to check for a number@>@;
-        while (1) { @<Read bytes until an invalid or terminating character@>@; }
+        while (1) { @<Read bytes until an invalid or terminating character@> }
         buf[i] = '\0'; /* |NULL|-terminate the \CEE/-`string' */
         r = sym(buf);
         free(buf);
@@ -2329,25 +2325,25 @@ enum {
 needs are those which control whether to operate and where.
 
 @ @<Opcode imp...@>=
-case OP_HALT:
+case OP_HALT:@/
         Running = 0;
         break;
-case OP_JUMP:
+case OP_JUMP:@/
         Ip = int_value(fetch(1));
         break;
-case OP_JUMP_FALSE:
+case OP_JUMP_FALSE:@/
         if (false_p(Acc))
                 Ip = int_value(fetch(1));
         else
                 skip(2);
         break;
-case OP_JUMP_TRUE:
+case OP_JUMP_TRUE:@/
         if (true_p(Acc))
                 Ip = int_value(fetch(1));
         else
                 skip(2);
         break;
-case OP_NOOP:
+case OP_NOOP:@/
         skip(1);
         break;
 
@@ -2355,7 +2351,7 @@ case OP_NOOP:
 to put it.
 
 @<Opcode imp...@>=
-case OP_QUOTE:
+case OP_QUOTE:@/
         Acc = fetch(1);
         skip(2);
         break;
@@ -2366,35 +2362,35 @@ one stack item (where it takes its |cdr| from) for the new
 |pair|/cons cell it creates.
 
 @<Opcode imp...@>=
-case OP_CAR:
+case OP_CAR:@/
         Acc = car(Acc);
         skip(1);
         break;
-case OP_CDR:
+case OP_CDR:@/
         Acc = cdr(Acc);
         skip(1);
         break;
-case OP_CONS:
+case OP_CONS:@/
         Acc = cons(Acc, rts_pop(1));
         skip(1);
         break;
-case OP_NULL_P:
+case OP_NULL_P:@/
         Acc = null_p(Acc) ? TRUE : FALSE;
         skip(1);
         break;
-case OP_PAIR_P:
+case OP_PAIR_P:@/
         Acc = pair_p(Acc) ? TRUE : FALSE;
         skip(1);
         break;
 
 @ Cons cell mutators clear take an item from the stack and clear |Acc|.
 @<Opcode imp...@>=
-case OP_SET_CAR_M:
+case OP_SET_CAR_M:@/
         car(rts_pop(1)) = Acc;
         Acc = VOID;
         skip(1);
         break;
-case OP_SET_CDR_M:
+case OP_SET_CDR_M:@/
         car(rts_pop(1)) = Acc;
         Acc = VOID;
         skip(1);
@@ -2409,21 +2405,21 @@ of the stack.
 |OP_NIL| pushes a new |NIL| \.{object} onto the stack, bypassing |Acc|.
 
 @<Opcode imp...@>=
-case OP_POP:
+case OP_POP:@/
         Acc = rts_pop(1);
         skip(1);
         break;
-case OP_PUSH:
+case OP_PUSH:@/
         rts_push(Acc);
         skip(1);
         break;
-case OP_SWAP:
+case OP_SWAP:@/
         tmp = Acc;
         Acc = rts_ref(0);
         rts_set(0, tmp);
         skip(1);
         break;
-case OP_NIL:
+case OP_NIL:@/
         rts_push(NIL);
         skip(1);
         break;
@@ -2432,24 +2428,24 @@ case OP_NIL:
 isn't used yet.
 
 @<Opcode imp...@>=
-case OP_ENVIRONMENT_P:
+case OP_ENVIRONMENT_P:@/
         Acc = environment_p(Acc) ? TRUE : FALSE;
         skip(1);
         break;
-case OP_ENV_MUTATE_M:
+case OP_ENV_MUTATE_M:@/
         env_set(rts_pop(1), fetch(1), Acc, true_p(fetch(2)));
         Acc = VOID;
         skip(3);
         break;
-case OP_ENV_QUOTE:
+case OP_ENV_QUOTE:@/
         Acc = Env;
         skip(1);
         break;
-case OP_ENV_ROOT:
+case OP_ENV_ROOT:@/
         Acc = Root;
         skip(1);
         break;
-case OP_ENV_SET_ROOT_M:
+case OP_ENV_SET_ROOT_M:@/
         Root = Acc; /* |Root| is `lost'! */
         skip(1);
         break;
@@ -2459,7 +2455,7 @@ case OP_ENV_SET_ROOT_M:
 the |UNDEFINED| it might return.
 
 @<Opcode imp...@>=
-case OP_LOOKUP:
+case OP_LOOKUP:@/
         vms_push(Acc);
         Acc = env_search(Env, vms_ref());
         if (undefined_p(Acc)) {
@@ -2482,14 +2478,14 @@ the stack frame which |OP_APPLY| created, allowing for {\it proper
 tail recursion} with further support from the compiler.
 
 @<Opcode imp...@>=
-case OP_APPLY:
+case OP_APPLY:@/
         @<Enter a |closure|@>@;
         break;
-case OP_APPLY_TAIL:
+case OP_APPLY_TAIL:@/
         @<Enter a |closure|@>@;
         frame_consume();
         break;
-case OP_RETURN:
+case OP_RETURN:@/
         frame_leave();
         break;
 
@@ -2512,11 +2508,11 @@ whether it's an applicative or an operative but creates a different
 type of \.{object} in each case.
 
 @<Opcode imp...@>=
-case OP_LAMBDA: /* The |applicative| */
+case OP_LAMBDA:@/ /* The |applicative| */
         Acc = applicative_new(rts_pop(1), Env, Prog, int_value(fetch(1)));
         skip(2);
         break;
-case OP_VOV: /* The |operative| */
+case OP_VOV:@/ /* The |operative| */
         Acc = operative_new(rts_pop(1), Env, Prog, int_value(fetch(1)));
         skip(2);
         break;
@@ -2526,7 +2522,7 @@ compile more code and then run it, so these |opcode|s do that.
 |OP_COMPILE| compiles an s-expression into \LL/ bytecode.
 
 @ @<Opcode imp...@>=
-case OP_COMPILE:
+case OP_COMPILE:@/
         Acc = compile(Acc);
         skip(1);
         break;
@@ -2537,7 +2533,7 @@ case OP_COMPILE:
 in |Acc|, starting at instruction 0.
 
 @<Opcode imp...@>=
-case OP_RUN:
+case OP_RUN:@/
         frame_push(1);
         frame_enter(Env, Acc, 0);
         break;
@@ -2547,7 +2543,7 @@ to interpret the bytecode in is taken from the stack rather than
 staying in the active |environment|.
 
 @<Opcode imp...@>=
-case OP_RUN_THERE:
+case OP_RUN_THERE:@/
         vms_push(rts_pop(1));
         frame_push(1);
         frame_enter(vms_pop(), Acc, 0);
@@ -2612,10 +2608,10 @@ emit (cell bc)
 {
         int l;
         l = vector_length(Compilation);
-        if (Here >= l)
+        if (Here >= l)@/
                 Compilation = vector_sub(Compilation,
-                        0, l,
-                        0, l + COMPILATION_SEGMENT,
+                        0, l,@|
+                        0, l + COMPILATION_SEGMENT,@|
                         OP_HALT);
         vector_ref(Compilation, Here++) = bc;
 }
@@ -2701,8 +2697,8 @@ looked up in the active environment.
 if (symbol_p(sexp)) {
         emitq(sexp);
         emitop(OP_LOOKUP);
-} else {
-        emitq(sexp);
+} else {@+
+        emitq(sexp);@+
 }
 
 @ Combining a |list| requires more work. This is also where
@@ -2723,8 +2719,8 @@ if (compiler_p(combiner)) {
         @<Compile operative combiner@>
 } else if (symbol_p(combiner) || pair_p(combiner)) {
         @<Compile unknown combiner@>
-} else {
-        error(ERR_UNCOMBINABLE, combiner);
+} else {@+
+        error(ERR_UNCOMBINABLE, combiner);@+
 }
 
 @ If the combiner (|sexp|'s |car|) is a |syntax| object then it
@@ -2737,8 +2733,8 @@ directly (and only) in |Root|.
 if (syntax_p(sexp)) {
         cell c;
         c = env_search(Root, combiner);
-        if (undefined_p(c)) /* impossibru! */
-                error(ERR_UNBOUND, combiner);
+        if (undefined_p(c))
+                error(ERR_UNBOUND, combiner); /* should never happen */
         combiner = c;
 }
 
