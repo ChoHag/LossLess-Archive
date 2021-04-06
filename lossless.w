@@ -3487,7 +3487,7 @@ compile_env_current (cell op,
         emitop(OP_ENV_QUOTE);
 }
 
-@* Quotation \AM\ Quasi-Quotation. Plain quotation is simple.
+@* Quotation \AM\ Quasiquotation. Plain quotation is simple.
 
 @c
 void
@@ -3498,19 +3498,19 @@ compile_quote (cell op __unused,
         emitq(args);
 }
 
-@ Quasi-quotation\footnote{$^1$}{Like this explanation of it.} is
-not. Unlike quotation, quasi-quotation must partially evaluate the
+@ Quasiquotation\footnote{$^1$}{Like this explanation of it.} is
+not. Unlike quotation, quasiquotation must partially evaluate the
 object looking for any |unquote| or |unquote-splicing| operators
 to evaluate, not quote, in the final construct.
 
 The algorithm below started off its life as \.{qq-expand-list} and
 \.{qq-expand} from Alan Bawden's ``Quasiquotation in Lisp'', two
-mostly-identical functions which quasi-quote a list and an atom
+mostly-identical functions which quasiquote a list and an atom
 respectively. Here they've been combined into a single function
 |quasi_both| with the few differences highlighted.
 
 As with any compiler, the first task is to figure out what sort of
-expression is being quasi-quoted and dispatch to a handler.
+expression is being |quasiquote|d and dispatch to a handler.
 
 @c
 void
@@ -3521,25 +3521,25 @@ quasi_both (cell    op,
             int     depth)
 {
         if (pair_p(arg)) {
-                @<Quasi-quote a pair/list@>
+                @<Quasiquote a pair/list@>
         } else if (vector_p(arg)) {
-                @<Quasi-quote a vector@>
+                @<Quasiquote a vector@>
         } else if (syntax_p(arg)) {
-                @<Quasi-quote syntax@>
+                @<Quasiquote syntax@>
         } else {@+
                 emitq(arg);@+
         }
 }
 
-@ A |list| is quasi-quoted by recursing into |quasi_both| for each
+@ A |list| is quasiquoted by recursing into |quasi_both| for each
 item in the {\it reverse} of the |list|, taking care to treat
 improper lists correctly\footnote{$^2$}{While writing this I've
 noticed that it's probably still not being done properly; I will
 need to investigate/debug but the non-edge cases work.}. The last
-item, which was the first item, is quasi-quoted as a list (ie. it
+item, which was the first item, is quasiquoted as a list (ie. it
 would have called \.{qq-expand-list}).
 
-@<Quasi-quote a pair/list@>=
+@<Quasiquote a pair/list@>=
 cell todo, tail;
 tail = NIL;
 todo = list_reverse(arg, &tail, NULL);
@@ -3557,18 +3557,18 @@ for (; !null_p(todo); todo = cdr(todo)) {
         }
 }
 
-@ Quasi-quoting |vector|s is not supported but I'm not anticipating
+@ Quasiquoting |vector|s is not supported but I'm not anticipating
 it being difficult, just not useful yet.
 
-@<Quasi-quote a vector@>=
+@<Quasiquote a vector@>=
 error(ERR_UNIMPLEMENTED, NIL);
 
-@ Quasi-quoting |syntax| objects is where it starts to get interesting.
-\qdot/, \qquote/ and \qquasi/ quasi-quote their object with quasi-quote
+@ Quasiquoting |syntax| objects is where it starts to get interesting.
+\qdot/, \qquote/ and \qquasi/ quasiquote their object with quasiquote
 objects noting the increased quasi-depth, then turn the result back
 into a |syntax| object.
 
-@<Quasi-quote syntax@>=
+@<Quasiquote syntax@>=
 if (car(arg) == Sym_SYNTAX_DOTTED@|
         || car(arg) == Sym_SYNTAX_QUOTE@|
         || car(arg) == Sym_SYNTAX_QUASI) {
@@ -3580,11 +3580,11 @@ if (car(arg) == Sym_SYNTAX_DOTTED@|
 
 @ An |unquote| (\qunquote/) operator, but not {\it unquote-splicing},
 evaluates its object if the quasi-depth is 0, which means we are
-not quasi-quoting a quasi-quote.
+not quasiquoting a quasiquote.
 
 A list is constructed from the result of the evaluation if necessary.
 
-@<Quasi-quote syntax@>=
+@<Quasiquote syntax@>=
 else if (car(arg) == Sym_SYNTAX_UNQUOTE) {
         if (depth == 0) {
                 if (!atomic_p)
@@ -3599,11 +3599,11 @@ else if (car(arg) == Sym_SYNTAX_UNQUOTE) {
         }
 }
 
-@ |unquote-splicing| is the most interesting part of quasi-quote.
-If we are quasi-quoting a quasi-quote then the unsplice is simply
+@ |unquote-splicing| is the most interesting part of quasiquote.
+If we are quasiquoting a quasiquote then the unsplice is simply
 re-encapsulated in |syntax| unevaluated.
 
-@<Quasi-quote syntax@>=
+@<Quasiquote syntax@>=
 else if (car(arg) == Sym_SYNTAX_UNSPLICE) {
          if (depth == 0) { @<Compile unquote-splicing@> }
          else {
