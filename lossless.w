@@ -1117,21 +1117,25 @@ list_length (cell l)
 @d ERR_IMPROPER_LIST "improper-list"
 @c
 cell
-list_reverse (cell     l,
-              boolean  error_p,
-              int     *sum)
+list_reverse (cell  l,
+              cell *improper,
+              int  *sum)
 {
-        cell saved;
+        cell saved, r;
         int c;
         saved = l;
         c = 0;
         vms_push(NIL);
         while (!null_p(l)) {
                 if (!pair_p(l)) {
-                        vms_pop();
-                        if (!error_p)
-                                return NIL;
-                        error(ERR_IMPROPER_LIST, saved);
+                        r = vms_pop();
+                        if (improper != NULL) {
+                                *improper = l;
+                                if (sum != NULL)
+                                        *sum = c;
+                                return r;
+                        } else
+                                error(ERR_IMPROPER_LIST, saved);
                 }
                 vms_set(cons(car(l), vms_ref()));
                 l = cdr(l);
@@ -1630,9 +1634,19 @@ unquote-splicing} operator \qunsplice/.
 char Putback[2] = { '\0', '\0' };
 int Read_Level = 0;
 cell Sym_ERR_UNEXPECTED = NIL;
+cell Sym_SYNTAX_DOTTED = NIL;
+cell Sym_SYNTAX_QUASI = NIL;
+cell Sym_SYNTAX_QUOTE = NIL;
+cell Sym_SYNTAX_UNQUOTE = NIL;
+cell Sym_SYNTAX_UNSPLICE = NIL;
 
 @ @<Global init...@>=
 Sym_ERR_UNEXPECTED = sym(ERR_UNEXPECTED);
+Sym_SYNTAX_DOTTED = sym(SYNTAX_DOTTED);
+Sym_SYNTAX_QUASI = sym(SYNTAX_QUASI);
+Sym_SYNTAX_QUOTE = sym(SYNTAX_QUOTE);
+Sym_SYNTAX_UNQUOTE = sym(SYNTAX_UNQUOTE);
+Sym_SYNTAX_UNSPLICE = sym(SYNTAX_UNSPLICE);
 
 @ @<Function dec...@>=
 cell read_symbol (void);
@@ -2272,11 +2286,10 @@ finally turn our attention to the virtual machine implementation,
 or the implementation of the opcodes that the compiler will turn
 \LL/ code into.
 
-This is the first of the Big Boring Lists. The opcodes that the
-virtual machine can perform must be declared before anything can
-be said about them. They take the form of an |enum|, this one
-unnamed. This list is sorted alphabetically for want of anything
-else.
+The opcodes that the virtual machine can perform must be declared
+before anything can be said about them. They take the form of an
+|enum|, this one unnamed. This list is sorted alphabetically for
+want of anything else.
 
 Also defined here are |fetch| and |skip| which |opcode| implementations
 will use to obtain their argument(s) from |Prog| or advance |Ip|,
@@ -2292,31 +2305,37 @@ enum {
         OP_CDR, /* 3 */
         OP_COMPILE,
         OP_CONS,
-        OP_ENVIRONMENT_P,
-        OP_ENV_MUTATE_M, /* 7 */
+        OP_CYCLE,
+        OP_ENVIRONMENT_P, /* 7 */
+        OP_ENV_MUTATE_M,
         OP_ENV_QUOTE,
         OP_ENV_ROOT,
-        OP_ENV_SET_ROOT_M,
-        OP_ERROR, /* 11 */
+        OP_ENV_SET_ROOT_M, /* 11 */
+        OP_ERROR,
         OP_HALT,
         OP_JUMP,
-        OP_JUMP_FALSE,
-        OP_JUMP_TRUE, /* 15 */
+        OP_JUMP_FALSE, /* 15 */
+        OP_JUMP_TRUE,
         OP_LAMBDA,
+        OP_LIST_REVERSE,
+        OP_LIST_REVERSE_M, /* 19 */
         OP_LOOKUP,
         OP_NIL,
-        OP_NOOP, /* 19 */
-        OP_NULL_P,
+        OP_NOOP,
+        OP_NULL_P, /* 23 */
         OP_PAIR_P,
+        OP_PEEK,
         OP_POP,
-        OP_PUSH, /* 23 */
+        OP_PUSH, /* 27 */
         OP_QUOTE,
         OP_RETURN,
         OP_RUN,
-        OP_RUN_THERE, /* 27 */
+        OP_RUN_THERE, /* 31 */
         OP_SET_CAR_M,
         OP_SET_CDR_M,
-        OP_SWAP, /* 31 */
+        OP_SNOC,
+        OP_SWAP, /* 35 */
+        OP_SYNTAX,
         OP_VOV,
         OPCODE_MAX
 };
@@ -2356,10 +2375,8 @@ case OP_QUOTE:@/
         skip(2);
         break;
 
-@* Cons Cells. I hope that |OP_CONS|, |OP_CAR|, |OP_CDR|,
-|OP_NULL_P| and |OP_PAIR_P| are self explanatory. |OP_CONS| consumes
-one stack item (where it takes its |cdr| from) for the new
-|pair|/cons cell it creates.
+@* Pairs \AM\ Lists. |OP_CAR|, |OP_CDR|, |OP_NULL_P| and |OP_PAIR_P|
+are self explanatory.
 
 @<Opcode imp...@>=
 case OP_CAR:@/
@@ -2370,16 +2387,26 @@ case OP_CDR:@/
         Acc = cdr(Acc);
         skip(1);
         break;
-case OP_CONS:@/
-        Acc = cons(Acc, rts_pop(1));
-        skip(1);
-        break;
 case OP_NULL_P:@/
         Acc = null_p(Acc) ? TRUE : FALSE;
         skip(1);
         break;
 case OP_PAIR_P:@/
         Acc = pair_p(Acc) ? TRUE : FALSE;
+        skip(1);
+        break;
+
+@ |OP_CONS| consumes one stack item (for the |cdr|) and puts the
+new pair in |Acc|. |OP_SNOC| does the opposite, pushing |Acc|'s
+|cdr| to the stack and leaving its |car| in |Acc|.
+@<Opcode imp...@>=
+case OP_CONS:@/
+        Acc = cons(Acc, rts_pop(1));
+        skip(1);
+        break;
+case OP_SNOC:@/
+        rts_push(cdr(Acc));
+        Acc = car(Acc);
         skip(1);
         break;
 
@@ -2396,15 +2423,45 @@ case OP_SET_CDR_M:@/
         skip(1);
         break;
 
+@* Other Objects. There is not much to say about these.
+
+@<Opcode imp...@>=
+case OP_LIST_REVERSE:@/
+        Acc = list_reverse(Acc, NULL, NULL);
+        skip(1);
+        break;
+case OP_LIST_REVERSE_M:@/
+        Acc = list_reverse_m(Acc, btrue);
+        skip(1);
+        break;
+case OP_SYNTAX:@/
+        Acc = atom(fetch(1), Acc, FORMAT_SYNTAX);
+        skip(2);
+        break;
+
 @* Stack. |OP_PUSH| and |OP_POP| push the \.{object} in |Acc| onto
 the stack, or remove the top stack \.{object} into |Acc|, respectively.
+|OP_PEEK| is |OP_POP| without removing the item from the stack.
 
 |OP_SWAP| swaps the \.{object} in |Acc| with the \.{object} on top
 of the stack.
 
-|OP_NIL| pushes a new |NIL| \.{object} onto the stack, bypassing |Acc|.
+|OP_CYCLE| swaps the top two stack items with each other.
+
+|OP_NIL| pushes a |NIL| straight onto the stack without the need
+to quote it first.
 
 @<Opcode imp...@>=
+case OP_CYCLE:@/
+        tmp = rts_ref(0);
+        rts_set(0, rts_ref(1));
+        rts_set(1, tmp);
+        skip(1);
+        break;
+case OP_PEEK:@/
+        Acc = rts_ref(0);
+        skip(1);
+        break;
 case OP_POP:@/
         Acc = rts_pop(1);
         skip(1);
@@ -2590,6 +2647,7 @@ void compile_expression (cell, boolean);
 void compile_lambda (cell, cell, boolean);
 void compile_null_p (cell, cell, boolean);
 void compile_pair_p (cell, cell, boolean);
+void compile_quasi (cell, cell, boolean);
 void compile_quote (cell, cell, boolean);
 void compile_set_car_m (cell, cell, boolean);
 void compile_set_cdr_m (cell, cell, boolean);
@@ -3139,7 +3197,7 @@ properties, or |NIL|, onto the stack as though arguments to an
 |applicative| |closure| (remember that the unevaluated run-time
 arguments of the |closure| are potentially one of those run-time
 properties).
-        
+
 @<Compile operative...@>=
 cell a, c, e, f;
 f = operative_formals(combiner);
@@ -3353,6 +3411,10 @@ compile_set_cdr_m (cell op,
         emitop(OP_SET_CDR_M);
 }
 
+@* Environment. The |environment| mutators are the same except for
+the flag given to the final opcode.
+
+@c
 void
 compile_set_m (cell op,
                cell args,
@@ -3425,12 +3487,190 @@ compile_env_current (cell op,
         emitop(OP_ENV_QUOTE);
 }
 
+@* Quotation \AM\ Quasi-Quotation. Plain quotation is simple.
+
+@c
 void
 compile_quote (cell op __unused,
                cell args,
                boolean tail_p __unused)
 { /* pattern 6 = unique */
         emitq(args);
+}
+
+@ Quasi-quotation\footnote{$^1$}{Like this explanation of it.} is
+not. Unlike quotation, quasi-quotation must partially evaluate the
+object looking for any |unquote| or |unquote-splicing| operators
+to evaluate, not quote, in the final construct.
+
+The algorithm below started off its life as \.{qq-expand-list} and
+\.{qq-expand} from Alan Bawden's ``Quasiquotation in Lisp'', two
+mostly-identical functions which quasi-quote a list and an atom
+respectively. Here they've been combined into a single function
+|quasi_both| with the few differences highlighted.
+
+As with any compiler, the first task is to figure out what sort of
+expression is being quasi-quoted and dispatch to a handler.
+
+@c
+void
+quasi_both (cell    op,
+            cell    oargs,
+            cell    arg,
+            boolean atomic_p,
+            int     depth)
+{
+        if (pair_p(arg)) {
+                @<Quasi-quote a pair/list@>
+        } else if (vector_p(arg)) {
+                @<Quasi-quote a vector@>
+        } else if (syntax_p(arg)) {
+                @<Quasi-quote syntax@>
+        } else {@+
+                emitq(arg);@+
+        }
+}
+
+@ A |list| is quasi-quoted by recursing into |quasi_both| for each
+item in the {\it reverse} of the |list|, taking care to treat
+improper lists correctly\footnote{$^2$}{While writing this I've
+noticed that it's probably still not being done properly; I will
+need to investigate/debug but the non-edge cases work.}. The last
+item, which was the first item, is quasi-quoted as a list (ie. it
+would have called \.{qq-expand-list}).
+
+@<Quasi-quote a pair/list@>=
+cell todo, tail;
+tail = NIL;
+todo = list_reverse(arg, &tail, NULL);
+if (null_p(tail))
+        emitq(NIL); /* not |OP_NIL| */
+else
+        quasi_both(op, oargs, tail, btrue, depth);
+for (; !null_p(todo); todo = cdr(todo)) {
+        emitop(OP_PUSH);
+        if (syntax_p(car(todo)) && caar(todo) == Sym_SYNTAX_UNSPLICE)
+                quasi_both(op, oargs, car(todo), bfalse, depth);
+        else {
+                quasi_both(op, oargs, car(todo), null_p(cdr(todo)), depth);
+                emitop(OP_CONS);
+        }
+}
+
+@ Quasi-quoting |vector|s is not supported but I'm not anticipating
+it being difficult, just not useful yet.
+
+@<Quasi-quote a vector@>=
+error(ERR_UNIMPLEMENTED, NIL);
+
+@ Quasi-quoting |syntax| objects is where it starts to get interesting.
+\qdot/, \qquote/ and \qquasi/ quasi-quote their object with quasi-quote
+objects noting the increased quasi-depth, then turn the result back
+into a |syntax| object.
+
+@<Quasi-quote syntax@>=
+if (car(arg) == Sym_SYNTAX_DOTTED@|
+        || car(arg) == Sym_SYNTAX_QUOTE@|
+        || car(arg) == Sym_SYNTAX_QUASI) {
+        quasi_both(op, oargs, cdr(arg), btrue,
+                car(arg) == Sym_SYNTAX_QUASI ? depth + 1 : depth);
+        emitop(OP_SYNTAX);
+        emit(car(arg));
+}
+
+@ An |unquote| (\qunquote/) operator, but not {\it unquote-splicing},
+evaluates its object if the quasi-depth is 0, which means we are
+not quasi-quoting a quasi-quote.
+
+A list is constructed from the result of the evaluation if necessary.
+
+@<Quasi-quote syntax@>=
+else if (car(arg) == Sym_SYNTAX_UNQUOTE) {
+        if (depth == 0) {
+                if (!atomic_p)
+                        emitop(OP_NIL);
+                compile_expression(cdr(arg), bfalse);
+                if (!atomic_p)
+                        emitop(OP_CONS);
+        } else {
+                quasi_both(op, oargs, cdr(arg), btrue, depth - 1);
+                emitop(OP_SYNTAX);
+                emit(Sym_SYNTAX_UNQUOTE);
+        }
+}
+
+@ |unquote-splicing| is the most interesting part of quasi-quote.
+If we are quasi-quoting a quasi-quote then the unsplice is simply
+re-encapsulated in |syntax| unevaluated.
+
+@<Quasi-quote syntax@>=
+else if (car(arg) == Sym_SYNTAX_UNSPLICE) {
+         if (depth == 0) { @<Compile unquote-splicing@> }
+         else {
+                quasi_both(op, oargs, cdr(arg), btrue, depth - 1);
+                emitop(OP_SYNTAX);
+                emit(Sym_SYNTAX_UNSPLICE);
+                if (!atomic_p)
+                        emitop(OP_CONS);
+        }
+}
+
+@ To unquote a list and splice it into the surrounding list we ... do this:
+@<Compile unquote-splicing@>=
+int goto_finish, goto_next, goto_pair_p, goto_start;
+if (atomic_p)
+        error(ERR_ARITY_SYNTAX, cons(op,oargs));@/@,
+/* save in-progress */
+emitop(OP_PUSH);
+@/@,
+/* Build/lookup unsplicing list */
+compile_expression(cdr(arg), 0);
+emitop(OP_PUSH);
+emitop(OP_PAIR_P);
+emitop(OP_JUMP_TRUE);
+goto_pair_p = comefrom();
+emitq(Sym_ERR_UNEXPECTED);
+emitop(OP_ERROR);
+@/@,
+/* work unsplicing list backwards */
+patch(goto_pair_p, int_new(Here));
+emitop(OP_POP);
+emitop(OP_LIST_REVERSE); /* improper? */
+emitop(OP_JUMP);
+goto_start = comefrom();
+@/@,
+/* Save remainder to stack */
+goto_next = Here;
+emitop(OP_POP);@/@,
+/* Split into car/cdr */
+patch(goto_start, int_new(Here));
+emitop(OP_SNOC);@/@,
+/* push onto list-in-progress */
+emitop(OP_CYCLE);
+emitop(OP_CONS);
+emitop(OP_SWAP);@/@,
+/* Get the next */
+emitop(OP_PUSH);
+emitop(OP_NULL_P);
+emitop(OP_JUMP_TRUE);
+goto_finish = comefrom();
+emitop(OP_JUMP);
+emit(int_new(goto_next));
+@/@,
+/* discard |NIL| */
+patch(goto_finish, int_new(Here));
+emitop(OP_POP);
+emitop(OP_POP);
+
+@ Finally the real compiler's entry-point calls into the above mess.
+
+@c
+void
+compile_quasi (cell op,
+               cell args,
+               boolean tail_p __unused)
+{ /* pattern Q */
+        quasi_both(op, args, args, btrue, 0);
 }
 
 @** Testing. \LL/ includes (hah!) a comprehensive test suite. It
@@ -3474,6 +3714,7 @@ main (int    argc,
 { "lambda", compile_lambda },
 { "vov", compile_vov },
 { "quote", compile_quote },
+{ "quasiquote", compile_quasi },
         /* Pairs: */
 { "car", compile_car },
 { "cdr", compile_cdr },
