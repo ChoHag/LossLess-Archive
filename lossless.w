@@ -2642,6 +2642,7 @@ void compile_cons (cell, cell, boolean);
 void compile_define_m (cell, cell, boolean);
 void compile_env_current (cell, cell, boolean);
 void compile_env_root (cell, cell, boolean);
+void compile_error (cell, cell, boolean);
 void compile_eval (cell, cell, boolean);
 void compile_expression (cell, boolean);
 void compile_lambda (cell, cell, boolean);
@@ -3282,6 +3283,31 @@ compile_eval (cell op,
         emitop(OP_RUN_THERE);
 }
 
+@* Run-time Errors. |error| expects a symbol an the first position
+and an optional form to evaluate in the second.
+
+@c
+void
+compile_error (cell op,
+               cell args,
+               boolean tail_p __unused)
+{
+        cell id, more, value;
+        more = arity(op, args, 1, 1);
+        arity_next(op, args, more, 0, 1);
+        value = cts_pop();
+        id = cts_pop();
+        if (!symbol_p(id))
+                arity_error(ERR_ARITY_SYNTAX, op, args);
+        if (undefined_p(value))
+                emitq(NIL);
+        else
+                compile_expression(value, 0);
+        emitop(OP_PUSH);
+        emitq(id);
+        emitop(OP_ERROR);
+}
+
 @* Cons Cells. These operators have been written out directly despite
 the obvious potential for refactoring into reusable pieces. This
 is short-lived until more compiler routines have been written and
@@ -3709,6 +3735,7 @@ main (int    argc,
 @s vov if
 @<List of opcode primitives@>=
         /* Core: */
+{ "error", compile_error },
 { "eval", compile_eval },
 { "if", compile_conditional },
 { "lambda", compile_lambda },
