@@ -3724,8 +3724,8 @@ main (int    argc,
 { "set-car!", compile_set_car_m },
 { "set-cdr!", compile_set_cdr_m },
        /* Mutation: */
-{ "get-current-environment", compile_env_current },
-{ "get-root-environment", compile_env_root },
+{ "current-environment", compile_env_current },
+{ "root-environment", compile_env_root },
 { "set!", compile_set_m },
 { "define!", compile_define_m },
 
