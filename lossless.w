@@ -3269,15 +3269,24 @@ compile_eval (cell op,
               boolean tail_p __unused)
 {
         cell more, sexp, eenv;
+        int goto_env_p;
         more = arity(op, args, 1, 1);
         sexp = cts_pop();
         arity_next(op, args, more, 0, 1);
         eenv = cts_pop();
-        if (undefined_p(eenv))
+        if (undefined_p(eenv)) {
                 emitop(OP_ENV_QUOTE);
-        else
+                emitop(OP_PUSH);
+        } else {
                 compile_expression(eenv, 0);
-        emitop(OP_PUSH);
+                emitop(OP_PUSH);
+                emitop(OP_ENVIRONMENT_P);
+                emitop(OP_JUMP_TRUE);
+                goto_env_p = comefrom();
+                emitq(Sym_ERR_UNEXPECTED);
+                emitop(OP_ERROR);
+                patch(goto_env_p, int_new(Here));
+        }
         compile_expression(sexp, 0);
         emitop(OP_COMPILE);
         emitop(OP_RUN_THERE);
