@@ -3635,11 +3635,8 @@ compile_quasicompiler (cell    op,
 reverses the list to find its tail, which may or may not be |NIL|,
 and recursively calling |compile_quasicompiler| for every item.
 
-After each item has been quasicompiled it's combined with the
+After each item has been quasicompiled it will be combined with the
 transformed list being grown on top of the stack.
-
-The first (last) element is given special treatment so that the
-quasicompiler can correctly handle splicing in an improper list.
 
 @<Quasiquote a pair/list@>=
 cell todo, tail;
@@ -3653,6 +3650,8 @@ for (; !null_p(todo); todo = cdr(todo)) {
         emitop(OP_PUSH); /* Push the list so far */
         compile_quasicompiler(op, oargs, car(todo), depth, btrue);
 }
+if (in_list_p)
+        emitop(OP_CONS);
 
 @ The quote \AM\ unquote syntax is where the quasicompiler starts
 to get interesting. |quote|s and |quasiquote|s (and a |dotted| tail)
