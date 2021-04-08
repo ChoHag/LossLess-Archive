@@ -1112,6 +1112,35 @@ list_length (cell l)
         return c;
 }
 
+@ A |list| is either NIL or a pair with one restriction, that its
+|cdr| must itself be a |list|. The size of the |list| is also counted
+to avoid walking it twice but nothing uses that (yet?).
+
+@c
+predicate
+list_p (cell o,
+        predicate improper_p,
+        cell *sum)
+{
+        int c = 0;
+        if (null_p(o)) {
+                if (sum != NULL)
+                        *sum = int_new(0);
+                return TRUE;
+        }
+        while (pair_p(o)) {
+                o = cdr(o);
+                c++;
+        }
+        if (sum != NULL)
+                *sum = int_new(c);
+        if (null_p(o))
+                return TRUE;
+        if (sum != NULL)
+                *sum = int_new(-(c + 1));
+        return improper_p;
+}
+
 @ A proper |list| can be reversed simply into a new |list|.
 
 @d ERR_IMPROPER_LIST "improper-list"
@@ -1119,7 +1148,7 @@ list_length (cell l)
 cell
 list_reverse (cell  l,
               cell *improper,
-              int  *sum)
+              cell *sum)
 {
         cell saved, r;
         int c;
@@ -1142,7 +1171,7 @@ list_reverse (cell  l,
                 c++;
         }
         if (sum != NULL)
-                *sum = c;
+                *sum = int_new(c);
         return vms_pop();
 }
 
@@ -1249,8 +1278,10 @@ snipping the old binding out, so the first pair is checked specially.
 @<Mutate if bound@>=
 if (null_p(env_layer(e)))
         error(ERR_UNBOUND, name);
-if (caar(env_layer(e)) == name)@/
+if (caar(env_layer(e)) == name) {
         env_layer(e) = cons(ass, cdr(env_layer(e)));
+        return;
+}
 for (t = env_layer(e); !null_p(cdr(t)); t = cdr(t)) {
         if (caadr(t) == name) {
                 cdr(t) = cddr(t);
@@ -2317,24 +2348,25 @@ enum {
         OP_JUMP_FALSE, /* 15 */
         OP_JUMP_TRUE,
         OP_LAMBDA,
-        OP_LIST_REVERSE,
-        OP_LIST_REVERSE_M, /* 19 */
+        OP_LIST_P,
+        OP_LIST_REVERSE, /* 19 */
+        OP_LIST_REVERSE_M,
         OP_LOOKUP,
         OP_NIL,
-        OP_NOOP,
-        OP_NULL_P, /* 23 */
+        OP_NOOP, /* 23 */
+        OP_NULL_P,
         OP_PAIR_P,
         OP_PEEK,
-        OP_POP,
-        OP_PUSH, /* 27 */
+        OP_POP, /* 27 */
+        OP_PUSH,
         OP_QUOTE,
         OP_RETURN,
-        OP_RUN,
-        OP_RUN_THERE, /* 31 */
+        OP_RUN, /* 31 */
+        OP_RUN_THERE,
         OP_SET_CAR_M,
         OP_SET_CDR_M,
-        OP_SNOC,
-        OP_SWAP, /* 35 */
+        OP_SNOC, /* 35 */
+        OP_SWAP,
         OP_SYNTAX,
         OP_VOV,
         OPCODE_MAX
@@ -2426,9 +2458,17 @@ case OP_SET_CDR_M:@/
 @* Other Objects. There is not much to say about these.
 
 @<Opcode imp...@>=
+case OP_LIST_P:@/
+        if (!false_p(fetch(2)))
+                error(ERR_UNIMPLEMENTED, NIL);
+        Acc = list_p(Acc, fetch(1), NULL);
+        skip(3);
+        break;
 case OP_LIST_REVERSE:@/
+        if (!true_p(fetch(1)) || !false_p(fetch(2)))
+                error(ERR_UNIMPLEMENTED, NIL);
         Acc = list_reverse(Acc, NULL, NULL);
-        skip(1);
+        skip(3);
         break;
 case OP_LIST_REVERSE_M:@/
         Acc = list_reverse_m(Acc, btrue);
@@ -2648,7 +2688,7 @@ void compile_expression (cell, boolean);
 void compile_lambda (cell, cell, boolean);
 void compile_null_p (cell, cell, boolean);
 void compile_pair_p (cell, cell, boolean);
-void compile_quasi (cell, cell, boolean);
+void compile_quasiquote (cell, cell, boolean);
 void compile_quote (cell, cell, boolean);
 void compile_set_car_m (cell, cell, boolean);
 void compile_set_cdr_m (cell, cell, boolean);
@@ -3522,57 +3562,84 @@ compile_env_current (cell op,
         emitop(OP_ENV_QUOTE);
 }
 
-@* Quotation \AM\ Quasiquotation. Plain quotation is simple.
+@* Quotation \AM\ Quasiquotation. A quoted object is one which is not
+evaluated and we have an opcode to do just that, used by many of the
+implementations above.
 
 @c
 void
 compile_quote (cell op __unused,
                cell args,
                boolean tail_p __unused)
-{ /* pattern 6 = unique */
+{
         emitq(args);
 }
 
-@ Quasiquotation\footnote{$^1$}{Like this explanation of it.} is
-not. Unlike quotation, quasiquotation must partially evaluate the
-object looking for any |unquote| or |unquote-splicing| operators
-to evaluate, not quote, in the final construct.
+@ Quasiquoting an object is almost, but not quite, entirely different.
+The end result is the same however---a run-time object which (almost)
+exactly matches the unevaluated source code that it was created from.
 
-The algorithm below started off its life as \.{qq-expand-list} and
-\.{qq-expand} from Alan Bawden's ``Quasiquotation in Lisp'', two
-mostly-identical functions which quasiquote a list and an atom
-respectively. Here they've been combined into a single function
-|quasi_both| with the few differences highlighted.
+A quasiquoted object is converted into its final form by changing any
+|unquote| (and {\it unquote-splicing\/}) within it to the result of
+evaulating them. This is complicated enough because we're now writing a
+compiler within our compiler\footnote{$^1$}{Yo!} but additionally the
+quasiquoted object may contain quasiquoted objects, changing the nature
+of the inner-|unquote| operators.
 
-As with any compiler, the first task is to figure out what sort of
-expression is being |quasiquote|d and dispatch to a handler.
+@ The compiler for compiling quasiquoted code only calls directly
+into the recursive quasicompiler engine (let's call it the
+quasicompiler).
+
+@<Function dec...@>=
+void compile_quasicompiler (cell, cell, cell, int, boolean);
+
+@ @c
+void
+compile_quasiquote (cell op,
+                    cell args,
+                    boolean tail_p __unused)
+{ /* pattern Q */
+        compile_quasicompiler(op, args, args, 0, bfalse);
+}
+
+@ As with any compiler, the first task is to figure out what sort
+of expression is being quasicompiled. Atoms are themselves. Otherwise
+lists and vectors must be recursively compiled item-by-item, and the
+syntactic operators must operate when encountered.
+
+Quasiquoting |vector|s is not supported but I'm not anticipating it
+being difficult, just not useful yet.
 
 @c
 void
-quasi_both (cell    op,
-            cell    oargs,
-            cell    arg,
-            boolean atomic_p,
-            int     depth)
+compile_quasicompiler (cell    op,
+                       cell    oargs,
+                       cell    arg,
+                       int     depth,
+                       boolean in_list_p)
 {
         if (pair_p(arg)) {
                 @<Quasiquote a pair/list@>
-        } else if (vector_p(arg)) {
-                @<Quasiquote a vector@>
+        } else if (vector_p(arg)) {@+
+                error(ERR_UNIMPLEMENTED, NIL);@+
         } else if (syntax_p(arg)) {
                 @<Quasiquote syntax@>
-        } else {@+
-                emitq(arg);@+
+        } else {
+                emitq(arg);
+                if (in_list_p)
+                        emitop(OP_CONS);
         }
 }
 
-@ A |list| is quasiquoted by recursing into |quasi_both| for each
-item in the {\it reverse} of the |list|, taking care to treat
-improper lists correctly\footnote{$^2$}{While writing this I've
-noticed that it's probably still not being done properly; I will
-need to investigate/debug but the non-edge cases work.}. The last
-item, which was the first item, is quasiquoted as a list (ie. it
-would have called \.{qq-expand-list}).
+@ Dealing first with the simple case of a list the quasicompiler
+reverses the list to find its tail, which may or may not be |NIL|,
+and recursively calling |compile_quasicompiler| for every item.
+
+After each item has been quasicompiled it's combined with the
+transformed list being grown on top of the stack.
+
+The first (last) element is given special treatment so that the
+quasicompiler can correctly handle splicing in an improper list.
 
 @<Quasiquote a pair/list@>=
 cell todo, tail;
@@ -3581,132 +3648,156 @@ todo = list_reverse(arg, &tail, NULL);
 if (null_p(tail))
         emitq(NIL); /* not |OP_NIL| */
 else
-        quasi_both(op, oargs, tail, btrue, depth);
+        compile_quasicompiler(op, oargs, tail, depth, btrue);
 for (; !null_p(todo); todo = cdr(todo)) {
-        emitop(OP_PUSH);
-        if (syntax_p(car(todo)) && caar(todo) == Sym_SYNTAX_UNSPLICE)
-                quasi_both(op, oargs, car(todo), bfalse, depth);
-        else {
-                quasi_both(op, oargs, car(todo), null_p(cdr(todo)), depth);
-                emitop(OP_CONS);
-        }
+        emitop(OP_PUSH); /* Push the list so far */
+        compile_quasicompiler(op, oargs, car(todo), depth, btrue);
 }
 
-@ Quasiquoting |vector|s is not supported but I'm not anticipating
-it being difficult, just not useful yet.
+@ The quote \AM\ unquote syntax is where the quasicompiler starts
+to get interesting. |quote|s and |quasiquote|s (and a |dotted| tail)
+recurse back into the quasicompiler to emit the transformation of
+the quoted object, then re-apply the syntax operator.
 
-@<Quasiquote a vector@>=
-error(ERR_UNIMPLEMENTED, NIL);
-
-@ Quasiquoting |syntax| objects is where it starts to get interesting.
-\qdot/, \qquote/ and \qquasi/ quasiquote their object with quasiquote
-objects noting the increased quasi-depth, then turn the result back
-into a |syntax| object.
+|depth| is increased when recursing into a |quasiquote| so that the
+compiler knows whether to evaluate an unquote operator.
 
 @<Quasiquote syntax@>=
+int d;
 if (car(arg) == Sym_SYNTAX_DOTTED@|
         || car(arg) == Sym_SYNTAX_QUOTE@|
         || car(arg) == Sym_SYNTAX_QUASI) {
-        quasi_both(op, oargs, cdr(arg), btrue,
-                car(arg) == Sym_SYNTAX_QUASI ? depth + 1 : depth);
+        d = (car(arg) == Sym_SYNTAX_QUASI) ? 1 : 0;
+        compile_quasicompiler(op, oargs, cdr(arg), depth + d, bfalse);
         emitop(OP_SYNTAX);
         emit(car(arg));
+        if (in_list_p)
+                emitop(OP_CONS);
 }
 
-@ An |unquote| (\qunquote/) operator, but not {\it unquote-splicing},
-evaluates its object if the quasi-depth is 0, which means we are
-not quasiquoting a quasiquote.
-
-A list is constructed from the result of the evaluation if necessary.
+@ |unquote| evaluates the unquoted object. If quasiquote is
+quasicompiling an inner quasiquote then the unquoted object isn't
+evaluated but compiled at a decreased |depth|. This enables the
+correct unquoting-or-not of quasiquoting quasiquoted quotes.
 
 @<Quasiquote syntax@>=
 else if (car(arg) == Sym_SYNTAX_UNQUOTE) {
-        if (depth == 0) {
-                if (!atomic_p)
-                        emitop(OP_NIL);
-                compile_expression(cdr(arg), bfalse);
-                if (!atomic_p)
-                        emitop(OP_CONS);
-        } else {
-                quasi_both(op, oargs, cdr(arg), btrue, depth - 1);
+        if (depth > 0) {
+                compile_quasicompiler(op, oargs, cdr(arg), depth - 1, bfalse);
                 emitop(OP_SYNTAX);
                 emit(Sym_SYNTAX_UNQUOTE);
-        }
+        } else
+                compile_expression(cdr(arg), bfalse);
+        if (in_list_p)
+                emitop(OP_CONS);
 }
 
-@ |unquote-splicing| is the most interesting part of quasiquote.
-If we are quasiquoting a quasiquote then the unsplice is simply
-re-encapsulated in |syntax| unevaluated.
+@ Similarly to |unquote|, {\it unquote-splicing} recurses back into
+the quasicompiler at a lower depth when unquoting an inner quasiquote.
 
 @<Quasiquote syntax@>=
 else if (car(arg) == Sym_SYNTAX_UNSPLICE) {
-         if (depth == 0) { @<Compile unquote-splicing@> }
-         else {
-                quasi_both(op, oargs, cdr(arg), btrue, depth - 1);
+        if (depth > 0) {
+                compile_quasicompiler(op, oargs, cdr(arg), depth - 1, bfalse);
                 emitop(OP_SYNTAX);
                 emit(Sym_SYNTAX_UNSPLICE);
-                if (!atomic_p)
+                if (in_list_p)
                         emitop(OP_CONS);
-        }
-}
+        } else { @<Compile unquote-splicing@> }
+} else
+        error(ERR_UNIMPLEMENTED, NIL);
 
-@ To unquote a list and splice it into the surrounding list we ... do this:
+@*1 Splicing Lists. If not recursing back into the quasicompiler
+at a lower depth then we are quasicompiling at the lowest depth and
+need to do the work.
+
+When splicing into the tail position of a list we can replace its
+|NIL| with the evaluation with minimal further processing. Unfortunately
+we don't know until runtime whether we are splicing into the tail
+position -- consider constructs like {\tt `(,@@foo ,@@bar)} where {\tt
+bar} evaluates to |NIL|.
+
 @<Compile unquote-splicing@>=
-int goto_finish, goto_next, goto_pair_p, goto_start;
-if (atomic_p)
-        error(ERR_ARITY_SYNTAX, cons(op,oargs));@/@,
-/* save in-progress */
-emitop(OP_PUSH);
-@/@,
-/* Build/lookup unsplicing list */
+int goto_inject_iterate, goto_inject_start, goto_finish;
+int goto_list_p, goto_null_p, goto_nnull_p;
+if (!in_list_p)
+        error(ERR_UNEXPECTED, arg);
+emitop(OP_PEEK);
+emitop(OP_NULL_P);
+emitop(OP_JUMP_TRUE);@+
+goto_null_p = comefrom();
+emitop(OP_PUSH); /* save |FALSE| */
+emitop(OP_JUMP);@+
+goto_nnull_p = comefrom();
+patch(goto_null_p, int_new(Here));
+emitop(OP_SWAP); /* become the tail, save |TRUE| */
+patch(goto_nnull_p, int_new(Here));
+
+@ |FALSE| or |TRUE| is now atop the stack indicating whether a new
+list is being built otherwise the remainder of the list is left on
+the stack. Now we can evaluate and validate the expression.
+
+@<Compile unquote-splicing@>=
 compile_expression(cdr(arg), 0);
 emitop(OP_PUSH);
-emitop(OP_PAIR_P);
-emitop(OP_JUMP_TRUE);
-goto_pair_p = comefrom();
+emitop(OP_LIST_P);@+
+emit(TRUE);@+
+emit(FALSE);
+emitop(OP_JUMP_TRUE);@+
+goto_list_p = comefrom();
 emitq(Sym_ERR_UNEXPECTED);
 emitop(OP_ERROR);
-@/@,
-/* work unsplicing list backwards */
-patch(goto_pair_p, int_new(Here));
+
+@ If we have a list we can leave it as-is if we were originally in
+the tail position.
+
+@<Compile unquote-splicing@>=
+patch(goto_list_p, int_new(Here));
 emitop(OP_POP);
-emitop(OP_LIST_REVERSE); /* improper? */
-emitop(OP_JUMP);
-goto_start = comefrom();
-@/@,
-/* Save remainder to stack */
-goto_next = Here;
-emitop(OP_POP);@/@,
-/* Split into car/cdr */
-patch(goto_start, int_new(Here));
-emitop(OP_SNOC);@/@,
-/* push onto list-in-progress */
+emitop(OP_SWAP);
+emitop(OP_JUMP_TRUE);@+
+goto_finish = comefrom();
+
+@ Splicing a list into the middle of another list is done item-by-item
+in reverse. A small efficiency could be gained here by not walking
+the list a second time (the first to validate it above) at the cost
+of more complex bytecode.
+
+By now the evaluated list to splice in is first on the stack followed
+by the partial result.
+
+@<Compile unquote-splicing@>=
+emitop(OP_POP);
+emitop(OP_LIST_REVERSE);@+
+emit(TRUE);@+
+emit(FALSE);
+@<Walk through the splicing list@>@;
+
+@ @<Walk through the splicing list@>=
+emitop(OP_JUMP);@+
+goto_inject_start = comefrom();
+
+goto_inject_iterate = Here;
+emitop(OP_POP);
+emitop(OP_SNOC);
 emitop(OP_CYCLE);
 emitop(OP_CONS);
-emitop(OP_SWAP);@/@,
-/* Get the next */
+emitop(OP_SWAP);
+
+@ If this was the last item (the first of the evaluated list's) or
+the evaluation was |NIL| then we're done otherwise we go around
+again. This is also where the loop starts to handle the case of
+evaluating an empty list.
+
+@<Walk through the splicing list@>=
+patch(goto_inject_start, int_new(Here));
 emitop(OP_PUSH);
 emitop(OP_NULL_P);
-emitop(OP_JUMP_TRUE);
-goto_finish = comefrom();
-emitop(OP_JUMP);
-emit(int_new(goto_next));
-@/@,
-/* discard |NIL| */
+emitop(OP_JUMP_FALSE);@+
+emit(int_new(goto_inject_iterate));
+emitop(OP_POP);
 patch(goto_finish, int_new(Here));
 emitop(OP_POP);
-emitop(OP_POP);
-
-@ Finally the real compiler's entry-point calls into the above mess.
-
-@c
-void
-compile_quasi (cell op,
-               cell args,
-               boolean tail_p __unused)
-{ /* pattern Q */
-        quasi_both(op, args, args, btrue, 0);
-}
 
 @** Testing. \LL/ includes (hah!) a comprehensive test suite. It
 also includes utilities for self-testing which require a version
@@ -3750,7 +3841,7 @@ main (int    argc,
 { "lambda", compile_lambda },
 { "vov", compile_vov },
 { "quote", compile_quote },
-{ "quasiquote", compile_quasi },
+{ "quasiquote", compile_quasiquote },
         /* Pairs: */
 { "car", compile_car },
 { "cdr", compile_cdr },
