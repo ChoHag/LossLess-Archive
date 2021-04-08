@@ -1227,7 +1227,7 @@ value.
 @d env_extend(e) atom((e), NIL, FORMAT_ENVIRONMENT)
 @d env_layer cdr
 @d env_parent car
-@d env_root_p(e) null_p(car(e))
+@d env_root_p(e) (environment_p(e) && null_p(car(e))
 @ Searching through an |environment| starts at its top layer and
 walks along each |pair|. If it encounters a |pair| who's
 |symbol| matches, the value is returned. If not then the search
@@ -2809,7 +2809,7 @@ until after that compiled bytecode has been interpreted.
 cell args, combiner;
 combiner = car(sexp);
 args = undot(cdr(sexp));
-@<Search |Root| for syntactic combiners@>
+@<Search |Root| for syntactic combiners@>@;
 if (compiler_p(combiner)) {
         @<Compile native combiner@>
 } else if (applicative_p(combiner)) {
@@ -3571,8 +3571,8 @@ void
 compile_quote (cell op __unused,
                cell args,
                boolean tail_p __unused)
-{
-        emitq(args);
+{@+
+        emitq(args);@+
 }
 
 @ Quasiquoting an object is almost, but not quite, entirely different.
