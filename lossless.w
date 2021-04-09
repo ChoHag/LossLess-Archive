@@ -1048,7 +1048,7 @@ accordingly.
 % TODO: need to verify that char casting works as I expect.
 
 @d fixint_p(p) (integer_p(p) && null_p(int_next(p)))
-@d int_value car
+@d int_value(p) ((int) (car(p)))
 @d int_next cdr
 @<Global var...@>=
 cell Small_Int[UCHAR_MAX + 1];
@@ -1077,13 +1077,13 @@ int_new_imp (int  value,
 {
         if (!null_p(next))
                 error(ERR_UNIMPLEMENTED, NIL);
-        return atom(value, next, FORMAT_INTEGER);
+        return atom((cell) value, next, FORMAT_INTEGER);
 }
 
 cell
 int_new (int value)
 {
-        if (value >= SCHAR_MIN || value <= SCHAR_MAX)@/
+        if (value >= SCHAR_MIN && value <= SCHAR_MAX)@/
                 return Small_Int[(unsigned char) value];
         return int_new_imp(value, NIL);
 }
