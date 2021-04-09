@@ -66,6 +66,7 @@ into the accumulator, where the result will also be left.
 #include <ctype.h>
 #include <limits.h>
 #include <setjmp.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h> /* for |memset| */
@@ -3813,14 +3814,12 @@ are expected to be removed by the \CEE/-compiler or linker rather
 than obscuring this source code by drowning it in preprocessor
 directives.
 
-@d tap_fail(m) tap_ok(bfalse, (m))
-@d tap_pass(m) tap_ok(btrue, (m))
 @<Function dec...@>=
 #ifdef LL_TEST
 int test_main (int, char **);
-void tap_plan (int);
-void tap_ok (boolean, char *);
+@#
 void test_compile (void);
+void test_integrate_pair (void);
 #endif
 
 @ @c
@@ -3846,6 +3845,9 @@ main (int    argc,
                 case '0':
                         test_compile();
                         break;
+                case 'p':
+                        test_integrate_pair();
+                        break;
                 default:
                         error(ERR_UNEXPECTED, NIL);
                         break;
@@ -3859,7 +3861,16 @@ main (int    argc,
 @ The internal test suite tracks the ID of the current test and
 includes functions to emit test results suitable for a TAP parser.
 
-@<Global var...@>=
+@d tap_fail(m) tap_ok(bfalse, (m))
+@d tap_pass(m) tap_ok(btrue, (m))
+@d tap_again(t, r, m) tap_ok(((t) = ((t) && (r))), (m))
+@<Function dec...@>=
+#ifdef LL_TEST
+void tap_plan (int);
+boolean tap_ok (boolean, char *);
+#endif
+
+@ @<Global var...@>=
 int Test_Plan = -1;
 int Next_Test = 1; /* not 0 */
 
@@ -3880,18 +3891,43 @@ tap_plan (int plan)
         printf("1..%d\n", plan);
 }
 
-void
+boolean
 tap_ok (boolean result,
         char *  message)
 {
         printf("%s %d %s\n", (result ? "ok" : "not ok"),@| Next_Test++,@|
                (message && *message) ? message : "?");
+        return result ? btrue : bfalse;
+}
+
+@ Interpreter tests have a common message format which includes the
+\LL/ source being interpreted. This function relies on the caller
+to maintain a fixed-size buffer of |TEST_BUFSIZE| bytes that it can
+write into.
+
+@d TEST_BUFSIZE 1024
+@c
+char *
+test_interpret_vmsgf (char *tsrc,
+                      char *tmsg,
+                      char *fmt,
+                      ...)
+{
+        char ttmp[TEST_BUFSIZE] = {0};
+        int ret;
+        va_list ap;
+        va_start(ap, fmt);
+        ret = vsnprintf(ttmp, TEST_BUFSIZE, fmt, ap);
+        va_end(ap);
+        snprintf(tmsg, TEST_BUFSIZE, "%s: %s", tsrc, ttmp);
+        return tmsg;
 }
 
 @ This seemingly pointless test achieves two goals: the test harness
 can run it first and can abort the entire test suite if it fails,
 and it provides a simple demonstration of how individual test scripts
-will be used by |lltest| without obscuring it with any tests.
+interact with the outside world, without obscuring it with any
+actual testing.
 
 @c
 void
@@ -3899,6 +3935,34 @@ test_compile (void)
 {
         tap_plan(1);
         tap_pass("LossLess compiles and runs");
+}
+
+@ Skipping over a bunch of boring but important unit tests for the
+data storage, the garbage collector, \AM c. we arrive at the
+critical integration between the compiler and the interpreter.
+
+First a set of assertions that the simpler opcodes work as advertised.
+
+@c
+void
+test_integrate_pair (void)
+{
+        boolean ok;
+        char *tsrc = NULL;
+        char tmsg[TEST_BUFSIZE] = {0};
+@q CWEB puts the gap in the wrong place @>
+#define smsgf(...)@,@,@,@,@,test_interpret_vmsgf (tsrc, tmsg, __VA_ARGS__)
+        @/@,/* cons: */
+#if 0
+        /* Needs |read_cstring| to exist */
+        Acc = read_cstring(tsrc = "(cons 24 42)");
+        interpret();
+#endif
+        ok = tap_ok(pair_p(Acc), smsgf("pair?"));
+        tap_again(ok, integer_p(car(Acc)) && int_value(car(Acc)) == 24,
+                smsgf("car"));
+        tap_again(ok, integer_p(car(Acc)) && int_value(cdr(Acc)) == 42,
+                smsgf("cdr"));
 }
 
 @** TODO.
