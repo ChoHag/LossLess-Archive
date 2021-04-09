@@ -1617,6 +1617,9 @@ interpret (void)
                 ins = int_value(vector_ref(Prog, Ip));
                 switch (ins) {
                         @<Opcode implementations@>@;
+#ifdef LL_TEST
+                        @<Testing opcode implementations@>@;
+#endif
                 }
         }
         if (Interrupt)
@@ -2404,8 +2407,21 @@ enum {
         OP_SWAP,
         OP_SYNTAX,
         OP_VOV,
+#ifdef LL_TEST
+        @<Testing Opcodes@>@;
+#endif
         OPCODE_MAX
 };
+
+@ @<Global constants@>=
+#ifndef LL_TEST
+enum {
+/* Ensure testing opcodes translate into undefined behaviour */
+        OP_TEST_UNDEFINED_BEHAVIOUR = 0xf00f,
+        @<Testing Opcodes@>@;
+        OPTEST_MAX
+};
+#endif
 
 @* Basic Flow Control. The most basic opcodes that the virtual machine
 needs are those which control whether to operate and where.
@@ -3848,6 +3864,7 @@ directives.
 int test_main (int, char **);
 @#
 void test_compile (void);
+void test_integrate_eval (void);
 void test_integrate_pair (void);
 #endif
 
@@ -3884,6 +3901,9 @@ main (int    argc,
                 switch(argv[1][0]) {
                 case '0':
                         test_compile();
+                        break;
+                case 'e':
+                        test_integrate_eval();
                         break;
                 case 'p':
                         test_integrate_pair();
@@ -4203,6 +4223,108 @@ tap_again(ok, symbol_p(car(Tmp_Test)) && car(Tmp_Test) == water,
           "(eq? (car T) '|fish out of water!|)");
 tap_again(okok, symbol_p(cdr(Tmp_Test)) && cdr(Tmp_Test) == polo,
           "(eq? (cdr T) 'polo!)");
+
+@ Although useful to write, and they weeded out some dumb bugs, the
+real difficulty is in ensuring the correct |environment| is in place
+at the right time.
+
+We'll skip |error| for now and start with |eval|. This requires a
+new operator (and underlying opcode) {\it test!probe} which collects
+state data into |Acc| at runtime.
+
+@<Testing Opcodes@>=
+OP_TEST_PROBE,
+
+@ @<Testing op...@>=
+case OP_TEST_PROBE:@/
+        Acc = testing_build_probe();
+        skip(1);
+        break;
+
+@ @<Function dec...@>=
+void compile_testing_probe (cell, cell, boolean);
+cell testing_build_probe (void);
+
+@ @<List of opcode primitives@>=
+{ "test!probe", compile_testing_probe },
+
+@ @c
+void
+compile_testing_probe (cell op,
+                       cell args,
+                       boolean tail_p)
+{
+        if (!null_p(args))
+                error(ERR_ARITY_SYNTAX, cons(op, args));
+        emitop(OP_TEST_PROBE);
+}
+
+@ With the new opcode ready we can test |eval|.
+@c
+cell
+assoc_member (cell alist,
+              cell needle)
+{
+        if (!symbol_p(needle))
+                error(ERR_ARITY_SYNTAX, NIL);
+        if (!list_p(alist, FALSE, NULL))
+                error(ERR_ARITY_SYNTAX, NIL);
+        for (; pair_p(alist); alist = cdr(alist))
+                if (caar(alist) == needle)
+                        return car(alist);
+        return FALSE;
+}
+
+cell
+assoc_content (cell alist,
+               cell needle)
+{
+        cell r;
+        r = assoc_member(alist, needle);
+        if (!pair_p(r))
+                error(ERR_UNEXPECTED, r);
+        return cdr(r);
+}
+
+cell
+assoc_value (cell alist,
+             cell needle)
+{
+        cell r;
+        r = assoc_member(alist, needle);
+        if (!pair_p(cdr(r)))
+                error(ERR_UNEXPECTED, r);
+        return car(r);
+}
+
+void
+test_integrate_eval (void)
+{
+        cell t;
+        vm_clear();
+        Acc = read_cstring("(eval '(test!probe))");
+        interpret();
+        t = assoc_value(Acc, sym("Env"));
+        tap_ok(environment_p(t), "(environment? (assoc-value T 'Env))");
+        tap_ok(t == Root, "(eq? (assoc-value T 'Env) Root)");
+}
+
+cell
+testing_build_probe (void)
+{
+        cell t;
+#define probe_push(n, o) do {             \
+        vms_push(cons((o), NIL));         \
+        vms_set(cons(sym(n), vms_ref())); \
+        t = vms_pop();                    \
+        vms_set(cons(t, vms_ref()));      \
+} while (0)
+        vms_push(NIL);
+        probe_push("Acc", Acc);
+        probe_push("Env", Env);
+
+        return vms_pop();
+}
 
 @** TODO.
 
