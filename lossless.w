@@ -4037,17 +4037,20 @@ advertised. This code is extremely boring and repetetive.
 void
 test_integrate_pair (void)
 {
-        boolean ok;
-        cell marco, polo, t; /* {\it Not} saved from destruction */
+        boolean ok, okok;
+        cell marco, polo, t, water; /* |t| is {\it not} saved from destruction */
         char *prefix = NULL;
         char msg[TEST_BUFSIZE] = {0};
         marco = sym("marco?");
         polo = sym("polo!");
+        water = sym("fish out of water!");
         @<Test integrating cons@>@;
         @<Test integrating car@>@;
         @<Test integrating cdr@>@;
         @<Test integrating null?@>@;
         @<Test integrating pair?@>@;
+        @<Test integrating set-car!@>@;
+        @<Test integrating set-cdr!@>@;
 }
 
 @ These tests could perhaps be made more thorough but I'm not sure what it would achieve.
@@ -4166,6 +4169,40 @@ test_vm_state(prefix,
         | TEST_VMSTATE_ENV_ROOT
         | TEST_VMSTATE_PROG_MAIN
         | TEST_VMSTATE_STACKS);
+
+@ @<Test integrating set-car!@>=
+vm_clear();
+Tmp_Test = cons(marco, water);
+t = atom(sym(SYNTAX_QUOTE), Tmp_Test, FORMAT_SYNTAX);
+t = atom(sym(SYNTAX_QUOTE), polo, FORMAT_SYNTAX);
+t = cons(t, NIL);
+t = cons(atom(sym(SYNTAX_QUOTE), Tmp_Test, FORMAT_SYNTAX), t);
+Acc = cons(sym("set-car!"), t);
+prefix = "(set-car! '(marco . |fish out of water!|) 'polo!)";
+interpret();
+ok = tap_ok(void_p(Acc), tmsgf("void?"));
+okok = ok = tap_ok(pair_p(Tmp_Test), tmsgf("(pair? T)"));
+tap_again(ok, symbol_p(car(Tmp_Test)) && car(Tmp_Test) == polo,
+          "(eq? (car T) 'polo!)");
+tap_again(okok, symbol_p(cdr(Tmp_Test)) && cdr(Tmp_Test) == water,
+          "(eq? (cdr T) '|fish out of water!|)");
+
+@ @<Test integrating set-cdr!@>=
+vm_clear();
+Tmp_Test = cons(water, marco);
+t = atom(sym(SYNTAX_QUOTE), Tmp_Test, FORMAT_SYNTAX);
+t = atom(sym(SYNTAX_QUOTE), polo, FORMAT_SYNTAX);
+t = cons(t, NIL);
+t = cons(atom(sym(SYNTAX_QUOTE), Tmp_Test, FORMAT_SYNTAX), t);
+Acc = cons(sym("set-cdr!"), t);
+prefix = "(set-cdr! '(|fish out of water!| . marco) 'polo!)";
+interpret();
+ok = tap_ok(void_p(Acc), tmsgf("void?"));
+okok = ok = tap_ok(pair_p(Tmp_Test), tmsgf("(pair? T)"));
+tap_again(ok, symbol_p(car(Tmp_Test)) && car(Tmp_Test) == water,
+          "(eq? (car T) '|fish out of water!|)");
+tap_again(okok, symbol_p(cdr(Tmp_Test)) && cdr(Tmp_Test) == polo,
+          "(eq? (cdr T) 'polo!)");
 
 @** TODO.
 
