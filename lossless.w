@@ -2485,7 +2485,7 @@ case OP_SET_CAR_M:@/
         skip(1);
         break;
 case OP_SET_CDR_M:@/
-        car(rts_pop(1)) = Acc;
+        cdr(rts_pop(1)) = Acc;
         Acc = VOID;
         skip(1);
         break;
@@ -3490,8 +3490,8 @@ compile_set_car_m (cell op,
         goto_pair_p = comefrom();
         emitq(Sym_ERR_UNEXPECTED);
         emitop(OP_ERROR);
-        compile_expression(value, bfalse);
         patch(goto_pair_p, int_new(Here));
+        compile_expression(value, bfalse);
         emitop(OP_SET_CAR_M);
 }
 
@@ -3512,8 +3512,8 @@ compile_set_cdr_m (cell op,
         goto_pair_p = comefrom();
         emitq(Sym_ERR_UNEXPECTED);
         emitop(OP_ERROR);
-        compile_expression(value, bfalse);
         patch(goto_pair_p, int_new(Here));
+        compile_expression(value, bfalse);
         emitop(OP_SET_CDR_M);
 }
 
