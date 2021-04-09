@@ -4232,7 +4232,14 @@ We'll skip |error| for now and start with |eval|. This requires a
 new operator (and underlying opcode) {\it test!probe} which collects
 state data into |Acc| at runtime.
 
-@<Testing Opcodes@>=
+@<Function dec...@>=
+void compile_testing_probe (cell, cell, boolean);
+cell testing_build_probe (void);
+
+@ @<List of opcode primitives@>=
+{ "test!probe", compile_testing_probe },
+
+@ @<Testing Opcodes@>=
 OP_TEST_PROBE,
 
 @ @<Testing op...@>=
@@ -4240,13 +4247,6 @@ case OP_TEST_PROBE:@/
         Acc = testing_build_probe();
         skip(1);
         break;
-
-@ @<Function dec...@>=
-void compile_testing_probe (cell, cell, boolean);
-cell testing_build_probe (void);
-
-@ @<List of opcode primitives@>=
-{ "test!probe", compile_testing_probe },
 
 @ @c
 void
@@ -4259,7 +4259,25 @@ compile_testing_probe (cell op,
         emitop(OP_TEST_PROBE);
 }
 
-@ With the new opcode ready we can test |eval|.
+#define probe_push(n, o) do {             \
+        vms_push(cons((o), NIL));         \
+        vms_set(cons(sym(n), vms_ref())); \
+        t = vms_pop();                    \
+        vms_set(cons(t, vms_ref()));      \
+} while (0)@;
+cell
+testing_build_probe (void)
+{
+        cell t;
+        vms_push(NIL);
+        probe_push("Acc", Acc);
+        probe_push("Env", Env);
+
+        return vms_pop();
+}
+
+@ With the new opcode ready we can test |eval| but that test needs
+association lists which we'll move elsewhere later.
 @c
 cell
 assoc_member (cell alist,
@@ -4294,36 +4312,47 @@ assoc_value (cell alist,
         r = assoc_member(alist, needle);
         if (!pair_p(cdr(r)))
                 error(ERR_UNEXPECTED, r);
-        return car(r);
+        return cadr(r);
 }
 
+@ Again this test isn't thorough but I think it solves our needs for now.
+@c
 void
 test_integrate_eval (void)
 {
         cell t;
+        char *prefix;
         vm_clear();
-        Acc = read_cstring("(eval '(test!probe))");
+        Acc = read_cstring((prefix = "(eval '(test!probe))"));
         interpret();
         t = assoc_value(Acc, sym("Env"));
         tap_ok(environment_p(t), "(environment? (assoc-value T 'Env))");
         tap_ok(t == Root, "(eq? (assoc-value T 'Env) Root)");
-}
+        /* TODO: Is it worth testing that |Acc == Prog ==
+           [OP_TEST_PROBE| |OP_RETURN]|? */
+        test_vm_state(prefix,
+                TEST_VMSTATE_NOT_RUNNING
+                | TEST_VMSTATE_NOT_INTERRUPTED
+                | TEST_VMSTATE_ENV_ROOT
+                | TEST_VMSTATE_PROG_MAIN
+                | TEST_VMSTATE_STACKS);
 
-cell
-testing_build_probe (void)
-{
-        cell t;
-#define probe_push(n, o) do {             \
-        vms_push(cons((o), NIL));         \
-        vms_set(cons(sym(n), vms_ref())); \
-        t = vms_pop();                    \
-        vms_set(cons(t, vms_ref()));      \
-} while (0)
-        vms_push(NIL);
-        probe_push("Acc", Acc);
-        probe_push("Env", Env);
-
-        return vms_pop();
+@#      vm_clear();
+        Tmp_Test = env_empty();
+        env_set(Tmp_Test, sym("test!probe"),
+                env_search(Root, sym("test!probe")), TRUE);
+        Acc = read_cstring((prefix = "(eval '(test!probe) E)"));
+        cddr(Acc) = cons(Tmp_Test, NIL);
+        interpret();
+        t = assoc_value(Acc, sym("Env"));
+        tap_ok(environment_p(t), "(environment? (assoc-value T 'Env))");
+        tap_ok(t == Tmp_Test, "(eq? (assoc-value T 'Env) E)");
+        test_vm_state(prefix,
+                TEST_VMSTATE_NOT_RUNNING
+                | TEST_VMSTATE_NOT_INTERRUPTED
+                | TEST_VMSTATE_ENV_ROOT
+                | TEST_VMSTATE_PROG_MAIN
+                | TEST_VMSTATE_STACKS);
 }
 
 @** TODO.
