@@ -3802,15 +3802,25 @@ patch(goto_finish, int_new(Here));
 emitop(OP_POP);
 
 @** Testing. \LL/ includes (hah!) a comprehensive test suite. It
-also includes utilities for self-testing which require a version
-of \LL/ with a different entry-point and some internal facilities
-exposed. The \CEE/ pre-precessor is used to keep these out of the
-\LL/ executable and rename its |main| function in the testing
-executable.
+also includes a cut-down version which gets built into a separate
+binary with the extra facilities required by tests that can't be
+performed in a regular run-time script.
 
+\CEE/'s preprocessor is used to define an alternate entry-point to
+\LL/ by renaming |main| and (probably) include some extra opcodes
+and operators. Other testing functions unused by the \LL/ runtime
+are expected to be removed by the \CEE/-compiler or linker rather
+than obscuring this source code by drowning it in preprocessor
+directives.
+
+@d tap_fail(m) tap_ok(bfalse, (m))
+@d tap_pass(m) tap_ok(btrue, (m))
 @<Function dec...@>=
 #ifdef LL_TEST
 int test_main (int, char **);
+void tap_plan (int);
+void tap_ok (boolean, char *);
+void test_compile (void);
 #endif
 
 @ @c
@@ -3821,22 +3831,75 @@ main (int    argc,
 {
         @<Initialise Virt...@>@;
         if (argc > 2)
-                error(ERR_UNIMPLEMENTED, NIL);
-        else if (argc == 2 && (argv[1][0] != '-'
-                               || argv[1][1] != 'r'
-                               || argv[1][2] != '\0'))
-                error(ERR_UNIMPLEMENTED, NIL);
-        if (argc == 2)
-                test_main(0, NULL);
+                error(ERR_ARITY_EXTRA, NIL);
+        else if (argc == 1)
+                return test_main(0, NULL);
+        else if (argv[1][1] != '\0')
+                error(ERR_ARITY_SYNTAX, NIL);
         else {
+                volatile boolean first = btrue;
                 @<Initialise error...@>@;
-                @/@,/* Now what? */
-                printf("1..1\n");
-                printf("not ok 1 There are tests\n");
+                if (!first)
+                        return EXIT_FAILURE;
+                first = bfalse;
+                switch(argv[1][0]) {
+                case '0':
+                        test_compile();
+                        break;
+                default:
+                        error(ERR_UNEXPECTED, NIL);
+                        break;
+                }
         }
+        tap_plan(0);
         return EXIT_SUCCESS;
 }
 #endif
+
+@ The internal test suite tracks the ID of the current test and
+includes functions to emit test results suitable for a TAP parser.
+
+@<Global var...@>=
+int Test_Plan = -1;
+int Next_Test = 1; /* not 0 */
+
+@ @c
+void
+tap_plan (int plan)
+{
+        if (plan == 0) {
+                if (Test_Plan < 0)
+                        printf("1..%d\n", Next_Test - 1);
+                return;
+        }
+        if (Test_Plan > 0)
+                error("plan-exists", int_new(Test_Plan));
+        if (plan < 0)
+                error(ERR_UNEXPECTED, cons(sym("test-plan"), int_new(plan)));
+        Test_Plan = plan;
+        printf("1..%d\n", plan);
+}
+
+void
+tap_ok (boolean result,
+        char *  message)
+{
+        printf("%s %d %s\n", (result ? "ok" : "not ok"),@| Next_Test++,@|
+               (message && *message) ? message : "?");
+}
+
+@ This seemingly pointless test achieves two goals: the test harness
+can run it first and can abort the entire test suite if it fails,
+and it provides a simple demonstration of how individual test scripts
+will be used by |lltest| without obscuring it with any tests.
+
+@c
+void
+test_compile (void)
+{
+        tap_plan(1);
+        tap_pass("LossLess compiles and runs");
+}
 
 @** TODO.
 
