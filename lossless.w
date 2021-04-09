@@ -3640,15 +3640,14 @@ transformed list being grown on top of the stack.
 
 When quasicompiling the list's tail there is no partial list to
 prepend it to so the quasicompiler is entered in atomic mode.
+|compile_quasicompiler| can be relied on to handle the tail of a
+proper or improper list.
 
 @<Quasiquote a pair/list@>=
 cell todo, tail;
 tail = NIL;
 todo = list_reverse(arg, &tail, NULL);
-if (null_p(tail))
-        emitq(NIL); /* not |OP_NIL| */
-else
-        compile_quasicompiler(op, oargs, tail, depth, bfalse);
+compile_quasicompiler(op, oargs, tail, depth, bfalse);
 for (; !null_p(todo); todo = cdr(todo)) {
         emitop(OP_PUSH); /* Push the list so far */
         compile_quasicompiler(op, oargs, car(todo), depth, btrue);
