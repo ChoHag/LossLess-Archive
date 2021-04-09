@@ -1463,28 +1463,33 @@ int     Ip        = 0;
 @ @<Protected...@>=
 &Acc, &Env, &Prog, &Prog_Main, &Root,
 
-@ The virtual machine is initialised in two stages. First |vm_init|
-performs global initialisation; this must be called exactly once.
+@ The \LL/ virtual machine is initialised by calling the code
+snippets built into the |@<Global init...@>| section then constructing
+the the root |environment| in |Root|.
 
-@c
-void
-vm_init (void)
-{
-        cell t;
-        int i;
-        primitive *n;
-        @<Pre-initialise |Small_Int|@>@;
-        @<Global init...@>@;
-        Prog_Main = compile_main();
-        i = 0;
-        Root = atom(NIL, NIL, FORMAT_ENVIRONMENT);
-        for (n = COMPILER + i; n->fn != NULL; n = COMPILER + (++i)) {
-                t = atom(i, NIL, FORMAT_COMPILER);
-                t = cons(t, NIL);
-                t = cons(sym(n->name), t);
-                env_layer(Root) = cons(t, env_layer(Root));
-        }
-        Env = Root;
+The very last thing initialisation does is establish fatal error
+handling errors raised between initialisation and when execution
+can begin are dealt with cleanly.
+
+@<Initialise Virtual Machine@>=
+cell t;
+int i;
+primitive *n;
+@<Pre-initialise |Small_Int|@>@;
+@<Global init...@>@;
+Prog_Main = compile_main();
+i = 0;
+Root = atom(NIL, NIL, FORMAT_ENVIRONMENT);
+for (n = COMPILER + i; n->fn != NULL; n = COMPILER + (++i)) {
+        t = atom(i, NIL, FORMAT_COMPILER);
+        t = cons(t, NIL);
+        t = cons(sym(n->name), t);
+        env_layer(Root) = cons(t, env_layer(Root));
+}
+Env = Root;
+if (setjmp(Goto_Begin) || setjmp(Goto_Error)) {
+        printf("FATAL ERROR\n");
+        return EXIT_FAILURE;
 }
 
 @ To complete initialisation |vm_clear| is called to ready the VM
@@ -2666,11 +2671,10 @@ The compiler uses a small set of \CEE/ macros which grow and fill
 @d emitop(o)  emit(int_new(o))
 @d emitq(o)   do@+ { @+emitop(OP_QUOTE);@+ emit(o);@+ } while (0) /* \CEE/... */
 @d patch(i,v) (vector_ref(Compilation, (i)) = (v))
-@d undot(p)   ((syntax_p(p) && car(p) == Sym_Dotted) ? cdr(p) : (p))
+@d undot(p)   ((syntax_p(p) && car(p) == Sym_SYNTAX_DOTTED) ? cdr(p) : (p))
 @<Global var...@>=
 int Here = 0;
 cell Compilation = NIL;
-cell Sym_Dotted = UNDEFINED;
 
 @ @<Function dec...@>=
 cell compile (cell);
@@ -2697,9 +2701,6 @@ void compile_vov (cell, cell, boolean);
 
 @ @<Protected...@>=
 &Compilation,
-
-@ @<Global init...@>=
-Sym_Dotted = sym(SYNTAX_DOTTED);
 
 @ @c
 void
@@ -3816,16 +3817,24 @@ int test_main (int, char **);
 #ifdef LL_TEST
 int
 main (int    argc,
-      char **argv __unused)
+      char **argv)
 {
-        vm_init();
-        if (argc > 1)
+        @<Initialise Virt...@>@;
+        if (argc > 2)
                 error(ERR_UNIMPLEMENTED, NIL);
-        @<Initialise error...@>@;
-        /* Now what? */
-        printf("1..1\n");
-        printf("not ok 1 There are tests\n");
-        return 0;
+        else if (argc == 2 && (argv[1][0] != '-'
+                               || argv[1][1] != 'r'
+                               || argv[1][2] != '\0'))
+                error(ERR_UNIMPLEMENTED, NIL);
+        if (argc == 2)
+                test_main(0, NULL);
+        else {
+                @<Initialise error...@>@;
+                @/@,/* Now what? */
+                printf("1..1\n");
+                printf("not ok 1 There are tests\n");
+        }
+        return EXIT_SUCCESS;
 }
 #endif
 
@@ -3863,14 +3872,16 @@ main (int    argc,
 #ifdef LL_TEST
 int
 test_main (int    argc,
-           char **argv)@;
+           char **argv __unused)@;
 #else
 int
 main (int    argc,
       char **argv __unused)
 #endif
 {
-        vm_init();
+        if (argc) {@+
+                @<Initialise Virt...@>@+
+        } /* if |!argc|, this is really |test_main| */
         if (argc > 1)
                 error(ERR_UNIMPLEMENTED, NIL);
         @<Initialise error...@>@;
@@ -3888,7 +3899,7 @@ main (int    argc,
         }
         if (Interrupt)
                 printf("Interrupted");
-        return 0;
+        return EXIT_SUCCESS;
 }
 
 @** Index.
