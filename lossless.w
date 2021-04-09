@@ -4114,7 +4114,7 @@ test_vm_state(prefix,
 vm_clear();
 t = atom(sym(SYNTAX_QUOTE), polo, FORMAT_SYNTAX);
 Acc = cons(sym("null?"), cons(t, NIL));
-prefix = "(null? 'polo)";
+prefix = "(null? 'polo!)";
 interpret();
 ok = tap_ok(false_p(Acc), tmsgf("false?"));
 test_vm_state(prefix,
@@ -4149,7 +4149,7 @@ test_vm_state(prefix,
 vm_clear();
 t = atom(sym(SYNTAX_QUOTE), polo, FORMAT_SYNTAX);
 Acc = cons(sym("pair?"), cons(t, NIL));
-prefix = "(pair? 'polo)";
+prefix = "(pair? 'polo!)";
 interpret();
 ok = tap_ok(false_p(Acc), tmsgf("false?"));
 test_vm_state(prefix,
