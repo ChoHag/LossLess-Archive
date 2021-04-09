@@ -1652,6 +1652,10 @@ buffer can hold {\it two} bytes to accomodate lisp's {\it
 unquote-splicing} operator \qunsplice/.
 % TODO: make unquote-splicing indexable
 
+In order to perform tests of this primitive implementation the
+reader can be directed to ``read'' from a \CEE/-strings if
+|Read_Pointer| is set to a value other than |NULL|.
+
 @d ERR_RECURSION "recursion"
 @d ERR_UNEXPECTED "unexpected"
 @d WARN_AMBIGUOUS_SYMBOL "ambiguous"
@@ -1670,6 +1674,7 @@ unquote-splicing} operator \qunsplice/.
 @<Global var...@>=
 char Putback[2] = { '\0', '\0' };
 int Read_Level = 0;
+char *Read_Pointer = NULL;
 cell Sym_ERR_UNEXPECTED = NIL;
 cell Sym_SYNTAX_DOTTED = NIL;
 cell Sym_SYNTAX_QUASI = NIL;
@@ -1703,6 +1708,13 @@ read_byte (void)
                 Putback[1] = '\0';
                 return r;
         }
+        if (Read_Pointer != NULL) {
+                r = *Read_Pointer;
+                if (r == '\0')
+                        r = EOF;
+                Read_Pointer++;
+                return r;
+        }
         return getchar();
 }
 
@@ -1712,6 +1724,23 @@ unread_byte(char c)
         @q assert(Putback[1] == '\0')@>
         Putback[1] = Putback[0];
         Putback[0] = c;
+}
+
+@ The internal test suite defined below needs to be able to evaluate
+code it supplies from hard-coded \CEE/-strings. The mechanism defined
+here to make this work is extremely brittle and not meant to be
+used by user code. Or for very long until it can be replaced by
+something less quonky.
+
+@c
+cell
+read_cstring (char *src)
+{
+        cell r;
+        Read_Pointer = src;
+        r = read_form();
+        Read_Pointer = NULL;
+        return r;
 }
 
 @ Even this primitive parser should support primitive comments.
@@ -3822,6 +3851,17 @@ void test_compile (void);
 void test_integrate_pair (void);
 #endif
 
+@ Some tests need to be able to save data from the maw of the garbage
+collector.
+
+@<Global var...@>=
+cell Tmp_Test = NIL;
+
+@ @<Protected...@>=
+#ifdef LL_TEST
+        &Tmp_Test,
+#endif
+
 @ @c
 #ifdef LL_TEST
 int
@@ -3903,10 +3943,14 @@ tap_ok (boolean result,
 @ Interpreter tests have a common message format which includes the
 \LL/ source being interpreted. This function relies on the caller
 to maintain a fixed-size buffer of |TEST_BUFSIZE| bytes that it can
-write into.
+write into, which the macro |tmsfg| hardcodes the name of for
+brevity.
 
 @d TEST_BUFSIZE 1024
 @c
+@q CWEB doesn't like/understand variadic macros @>
+@q Also it puts the gap in the wrong place @>
+#define tmsgf(...)@,@,@,@,@,test_interpret_vmsgf(prefix, msg, __VA_ARGS__)
 char *
 test_interpret_vmsgf (char *tsrc,
                       char *tmsg,
@@ -3941,29 +3985,187 @@ test_compile (void)
 data storage, the garbage collector, \AM c. we arrive at the
 critical integration between the compiler and the interpreter.
 
-First a set of assertions that the simpler opcodes work as advertised.
+A lot of these tests validate some parts of the VM state controlled
+by the |flags| parameter.
+
+@q Attempting to make _STACKS multi-line confuses CWEB greatly @>
+@d TEST_VMSTATE_RUNNING         0x01
+@d TEST_VMSTATE_NOT_RUNNING     0x00
+@d TEST_VMSTATE_INTERRUPTED     0x02
+@d TEST_VMSTATE_NOT_INTERRUPTED 0x00
+@d TEST_VMSTATE_VMS             0x04
+@d TEST_VMSTATE_CTS             0x08
+@d TEST_VMSTATE_RTS             0x10
+@d TEST_VMSTATE_STACKS          (TEST_VMSTATE_VMS | TEST_VMSTATE_CTS | TEST_VMSTATE_RTS)
+@d TEST_VMSTATE_ENV_ROOT        0x20
+@d TEST_VMSTATE_PROG_MAIN       0x40
+@c
+void
+test_vm_state (char *prefix,
+               int   flags)
+{
+        char msg[TEST_BUFSIZE] = {0};
+        if (flags & TEST_VMSTATE_RUNNING)
+                tap_ok(Running, tmsgf("(== Running 1)"));
+        else
+                tap_ok(!Running, tmsgf("(== Running 0)"));
+        if (flags & TEST_VMSTATE_INTERRUPTED)
+                tap_ok(Interrupt, tmsgf("(== Interrupt 1)"));
+        else
+                tap_ok(!Interrupt, tmsgf("(== Interrupt 0)"));
+        if (flags & TEST_VMSTATE_VMS)
+                tap_ok(null_p(VMS), tmsgf("(null? VMS)"));
+        if (flags & TEST_VMSTATE_CTS)
+                tap_ok(null_p(CTS), tmsgf("(null? CTS)"));
+        if (flags & TEST_VMSTATE_RTS)
+                tap_ok(RTSp == -1, tmsgf("(== RTSp -1)"));
+        if (flags & TEST_VMSTATE_ENV_ROOT)
+                tap_ok(Env == Root, tmsgf("(== Env Root)"));
+        if (flags & TEST_VMSTATE_PROG_MAIN) {
+                tap_ok(Prog == Prog_Main,
+                       tmsgf("Prog_Main is returned to"));
+                tap_ok(Ip == vector_length(Prog_Main) - 1,
+                       tmsgf("Prog_Main is completed"));
+        }
+        @/@, /* TODO? Others: root unchanged; */
+}
+
+@ First a set of assertions that the simpler opcodes work as
+advertised. This code is extremely boring and repetetive.
 
 @c
 void
 test_integrate_pair (void)
 {
         boolean ok;
-        char *tsrc = NULL;
-        char tmsg[TEST_BUFSIZE] = {0};
-@q CWEB puts the gap in the wrong place @>
-#define smsgf(...)@,@,@,@,@,test_interpret_vmsgf (tsrc, tmsg, __VA_ARGS__)
-        @/@,/* cons: */
-#if 0
-        /* Needs |read_cstring| to exist */
-        Acc = read_cstring(tsrc = "(cons 24 42)");
-        interpret();
-#endif
-        ok = tap_ok(pair_p(Acc), smsgf("pair?"));
-        tap_again(ok, integer_p(car(Acc)) && int_value(car(Acc)) == 24,
-                smsgf("car"));
-        tap_again(ok, integer_p(car(Acc)) && int_value(cdr(Acc)) == 42,
-                smsgf("cdr"));
+        cell marco, polo, t; /* {\it Not} saved from destruction */
+        char *prefix = NULL;
+        char msg[TEST_BUFSIZE] = {0};
+        marco = sym("marco?");
+        polo = sym("polo!");
+        @<Test integrating cons@>@;
+        @<Test integrating car@>@;
+        @<Test integrating cdr@>@;
+        @<Test integrating null?@>@;
+        @<Test integrating pair?@>@;
 }
+
+@ These tests could perhaps be made more thorough but I'm not sure what it would achieve.
+@<Test integrating cons@>=
+vm_clear();
+Acc = read_cstring(prefix = "(cons 24 42)");
+interpret();
+ok = tap_ok(pair_p(Acc), tmsgf("pair?"));
+tap_again(ok, integer_p(car(Acc)) && int_value(car(Acc)) == 24,
+        tmsgf("car"));
+tap_again(ok, integer_p(car(Acc)) && int_value(cdr(Acc)) == 42,
+        tmsgf("cdr"));
+test_vm_state(prefix,
+        TEST_VMSTATE_NOT_RUNNING
+        | TEST_VMSTATE_NOT_INTERRUPTED
+        | TEST_VMSTATE_ENV_ROOT
+        | TEST_VMSTATE_PROG_MAIN
+        | TEST_VMSTATE_STACKS);
+
+@ @<Test integrating car@>=
+vm_clear();
+Tmp_Test = cons(int_new(42), polo);
+t = atom(sym(SYNTAX_QUOTE), Tmp_Test, FORMAT_SYNTAX); /* TODO: constructor */
+t = cons(t, NIL);
+Acc = cons(sym("car"), t);
+prefix = "(car '(42 . polo))";
+interpret();
+ok = tap_ok(integer_p(Acc) && int_value(Acc) == 42, tmsgf("integer?"));
+test_vm_state(prefix,
+        TEST_VMSTATE_NOT_RUNNING
+        | TEST_VMSTATE_NOT_INTERRUPTED
+        | TEST_VMSTATE_ENV_ROOT
+        | TEST_VMSTATE_PROG_MAIN
+        | TEST_VMSTATE_STACKS);
+
+@ @<Test integrating cdr@>=
+vm_clear();
+@/@,/* same |Tmp_Test|; safe to assume |t| is safe? */
+Acc = cons(sym("cdr"), t);
+prefix = "(cdr '(42 . polo))";
+interpret();
+ok = tap_ok(symbol_p(Acc) && Acc == polo, tmsgf("symbol?"));
+test_vm_state(prefix,
+        TEST_VMSTATE_NOT_RUNNING
+        | TEST_VMSTATE_NOT_INTERRUPTED
+        | TEST_VMSTATE_ENV_ROOT
+        | TEST_VMSTATE_PROG_MAIN
+        | TEST_VMSTATE_STACKS);
+
+@ @<Test integrating null?@>=
+vm_clear();
+Acc = cons(sym("null?"), cons(NIL, NIL));
+prefix = "(null? ())";
+interpret();
+ok = tap_ok(true_p(Acc), tmsgf("true?"));
+test_vm_state(prefix,
+        TEST_VMSTATE_NOT_RUNNING
+        | TEST_VMSTATE_NOT_INTERRUPTED
+        | TEST_VMSTATE_ENV_ROOT
+        | TEST_VMSTATE_PROG_MAIN);
+vm_clear();
+t = atom(sym(SYNTAX_QUOTE), polo, FORMAT_SYNTAX);
+Acc = cons(sym("null?"), cons(t, NIL));
+prefix = "(null? 'polo)";
+interpret();
+ok = tap_ok(false_p(Acc), tmsgf("false?"));
+test_vm_state(prefix,
+        TEST_VMSTATE_NOT_RUNNING
+        | TEST_VMSTATE_NOT_INTERRUPTED
+        | TEST_VMSTATE_ENV_ROOT
+        | TEST_VMSTATE_PROG_MAIN);
+vm_clear();
+t = atom(sym(SYNTAX_QUOTE), cons(NIL, NIL), FORMAT_SYNTAX);
+Acc = cons(sym("null?"), cons(t, NIL));
+prefix = "(null? '(()))";
+interpret();
+ok = tap_ok(false_p(Acc), tmsgf("false?"));
+test_vm_state(prefix,
+        TEST_VMSTATE_NOT_RUNNING
+        | TEST_VMSTATE_NOT_INTERRUPTED
+        | TEST_VMSTATE_ENV_ROOT
+        | TEST_VMSTATE_PROG_MAIN
+        | TEST_VMSTATE_STACKS);
+
+@ @<Test integrating pair?@>=
+vm_clear();
+Acc = cons(sym("pair?"), cons(NIL, NIL));
+prefix = "(pair? ())";
+interpret();
+ok = tap_ok(false_p(Acc), tmsgf("false?"));
+test_vm_state(prefix,
+        TEST_VMSTATE_NOT_RUNNING
+        | TEST_VMSTATE_NOT_INTERRUPTED
+        | TEST_VMSTATE_ENV_ROOT
+        | TEST_VMSTATE_PROG_MAIN);
+vm_clear();
+t = atom(sym(SYNTAX_QUOTE), polo, FORMAT_SYNTAX);
+Acc = cons(sym("pair?"), cons(t, NIL));
+prefix = "(pair? 'polo)";
+interpret();
+ok = tap_ok(false_p(Acc), tmsgf("false?"));
+test_vm_state(prefix,
+        TEST_VMSTATE_NOT_RUNNING
+        | TEST_VMSTATE_NOT_INTERRUPTED
+        | TEST_VMSTATE_ENV_ROOT
+        | TEST_VMSTATE_PROG_MAIN);
+vm_clear();
+t = atom(sym(SYNTAX_QUOTE), cons(NIL, NIL), FORMAT_SYNTAX);
+Acc = cons(sym("pair?"), cons(t, NIL));
+prefix = "(pair? '(()))";
+interpret();
+ok = tap_ok(true_p(Acc), tmsgf("true?"));
+test_vm_state(prefix,
+        TEST_VMSTATE_NOT_RUNNING
+        | TEST_VMSTATE_NOT_INTERRUPTED
+        | TEST_VMSTATE_ENV_ROOT
+        | TEST_VMSTATE_PROG_MAIN
+        | TEST_VMSTATE_STACKS);
 
 @** TODO.
 
