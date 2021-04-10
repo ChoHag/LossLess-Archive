@@ -1228,7 +1228,8 @@ value.
 @d env_extend(e) atom((e), NIL, FORMAT_ENVIRONMENT)
 @d env_layer cdr
 @d env_parent car
-@d env_root_p(e) (environment_p(e) && null_p(car(e))
+@d env_empty_p(e) (environment_p(e) && null_p(car(e)) && null_p(cdr(e)))
+@d env_root_p(e) (environment_p(e) && null_p(car(e)))
 @ Searching through an |environment| starts at its top layer and
 walks along each |pair|. If it encounters a |pair| who's
 |symbol| matches, the value is returned. If not then the search
@@ -1618,7 +1619,7 @@ interpret (void)
                 switch (ins) {
                         @<Opcode implementations@>@;
 #ifdef LL_TEST
-                        @<Testing opcode implementations@>@;
+                        @<Testing implementations@>@;
 #endif
                 }
         }
@@ -2408,7 +2409,7 @@ enum {
         OP_SYNTAX,
         OP_VOV,
 #ifdef LL_TEST
-        @<Testing Opcodes@>@;
+        @<Testing opcodes@>@;
 #endif
         OPCODE_MAX
 };
@@ -2418,7 +2419,7 @@ enum {
 enum {
 /* Ensure testing opcodes translate into undefined behaviour */
         OP_TEST_UNDEFINED_BEHAVIOUR = 0xf00f,
-        @<Testing Opcodes@>@;
+        @<Testing opcodes@>@;
         OPTEST_MAX
 };
 #endif
@@ -3900,16 +3901,16 @@ main (int    argc,
                 first = bfalse;
                 switch(argv[1][0]) {
                 case '0':
-                        test_compile();
-                        break;
+                        test_compile();@+
+                        break; /* zero */
                 case 'e':
-                        test_integrate_eval();
+                        test_integrate_eval();@+
                         break;
                 case 'p':
-                        test_integrate_pair();
+                        test_integrate_pair();@+
                         break;
                 default:
-                        error(ERR_UNEXPECTED, NIL);
+                        error(ERR_UNEXPECTED, NIL);@+
                         break;
                 }
         }
@@ -3918,12 +3919,14 @@ main (int    argc,
 }
 #endif
 
-@ The internal test suite tracks the ID of the current test and
-includes functions to emit test results suitable for a TAP parser.
+@* Internal Test ``Suite''. The internal test suite tracks the ID
+of the current test and includes functions to write results suitable
+for a TAP parser to stdout.
 
 @d tap_fail(m) tap_ok(bfalse, (m))
 @d tap_pass(m) tap_ok(btrue, (m))
-@d tap_again(t, r, m) tap_ok(((t) = ((t) && (r))), (m))
+@d tap_again(t, r, m) tap_ok(((t) = ((t) && (r))), (m)) /* intentional
+                                                           assignment */
 @<Function dec...@>=
 #ifdef LL_TEST
 void tap_plan (int);
@@ -3951,6 +3954,7 @@ tap_plan (int plan)
         printf("1..%d\n", plan);
 }
 
+@ @c
 boolean
 tap_ok (boolean result,
         char *  message)
@@ -3960,11 +3964,25 @@ tap_ok (boolean result,
         return result ? btrue : bfalse;
 }
 
-@ Interpreter tests have a common message format which includes the
-\LL/ source being interpreted. This function relies on the caller
-to maintain a fixed-size buffer of |TEST_BUFSIZE| bytes that it can
-write into, which the macro |tmsfg| hardcodes the name of for
-brevity.
+@* Sanity Test. This seemingly pointless test achieves two goals:
+the test harness can run it first and can abort the entire test
+suite if it fails, and it provides a simple demonstration of how
+individual test scripts interact with the outside world, without
+obscuring it with any actual testing.
+
+@c
+void
+test_compile (void)
+{
+        tap_plan(1);
+        tap_pass("LossLess compiles and runs");
+}
+
+@* Interpreter Tests. Testing the interpreter means getting it to
+evaluate some code, which needs to be included in each test's
+description. This function relies on the caller to maintain a
+fixed-size buffer of |TEST_BUFSIZE| bytes that it can write into,
+which the macro |tmsgf| hardcodes the name of for brevity.
 
 @d TEST_BUFSIZE 1024
 @c
@@ -3987,25 +4005,15 @@ test_interpret_vmsgf (char *tsrc,
         return tmsg;
 }
 
-@ This seemingly pointless test achieves two goals: the test harness
-can run it first and can abort the entire test suite if it fails,
-and it provides a simple demonstration of how individual test scripts
-interact with the outside world, without obscuring it with any
-actual testing.
-
-@c
-void
-test_compile (void)
-{
-        tap_plan(1);
-        tap_pass("LossLess compiles and runs");
-}
-
 @ Skipping over a bunch of boring but important unit tests for the
 data storage, the garbage collector, \AM c. we arrive at the
 critical integration between the compiler and the interpreter.
 
-A lot of these tests validate some parts of the VM state controlled
+Calling the following tests integration tests may be thought of as
+a bit of a misnomer; if so consider them unit tests of the integration
+tests which are to follow in pure \LL/ code.
+
+A lot of these tests validate some parts of the VM state, controlled
 by the |flags| parameter.
 
 @q Attempting to make _STACKS multi-line confuses CWEB greatly @>
@@ -4050,8 +4058,8 @@ test_vm_state (char *prefix,
         @/@, /* TODO? Others: root unchanged; */
 }
 
-@ First a set of assertions that the simpler opcodes work as
-advertised. This code is extremely boring and repetetive.
+@*1 Pairs. First a set of assertions that the simpler opcodes work
+as advertised. This code is extremely boring and repetetive.
 
 @c
 void
@@ -4131,6 +4139,8 @@ test_vm_state(prefix,
         | TEST_VMSTATE_NOT_INTERRUPTED
         | TEST_VMSTATE_ENV_ROOT
         | TEST_VMSTATE_PROG_MAIN);
+
+@ @<Test integrating null?@>=
 vm_clear();
 t = atom(sym(SYNTAX_QUOTE), polo, FORMAT_SYNTAX);
 Acc = cons(sym("null?"), cons(t, NIL));
@@ -4142,6 +4152,8 @@ test_vm_state(prefix,
         | TEST_VMSTATE_NOT_INTERRUPTED
         | TEST_VMSTATE_ENV_ROOT
         | TEST_VMSTATE_PROG_MAIN);
+
+@ @<Test integrating null?@>=
 vm_clear();
 t = atom(sym(SYNTAX_QUOTE), cons(NIL, NIL), FORMAT_SYNTAX);
 Acc = cons(sym("null?"), cons(t, NIL));
@@ -4166,6 +4178,8 @@ test_vm_state(prefix,
         | TEST_VMSTATE_NOT_INTERRUPTED
         | TEST_VMSTATE_ENV_ROOT
         | TEST_VMSTATE_PROG_MAIN);
+
+@ @<Test integrating pair?@>=
 vm_clear();
 t = atom(sym(SYNTAX_QUOTE), polo, FORMAT_SYNTAX);
 Acc = cons(sym("pair?"), cons(t, NIL));
@@ -4177,6 +4191,8 @@ test_vm_state(prefix,
         | TEST_VMSTATE_NOT_INTERRUPTED
         | TEST_VMSTATE_ENV_ROOT
         | TEST_VMSTATE_PROG_MAIN);
+
+@ @<Test integrating pair?@>=
 vm_clear();
 t = atom(sym(SYNTAX_QUOTE), cons(NIL, NIL), FORMAT_SYNTAX);
 Acc = cons(sym("pair?"), cons(t, NIL));
@@ -4224,9 +4240,9 @@ tap_again(ok, symbol_p(car(Tmp_Test)) && car(Tmp_Test) == water,
 tap_again(okok, symbol_p(cdr(Tmp_Test)) && cdr(Tmp_Test) == polo,
           "(eq? (cdr T) 'polo!)");
 
-@ Although useful to write, and they weeded out some dumb bugs, the
-real difficulty is in ensuring the correct |environment| is in place
-at the right time.
+@*1 |eval|. Although useful to write, and they weeded out some dumb
+bugs, the real difficulty is in ensuring the correct |environment|
+is in place at the right time.
 
 We'll skip |error| for now and start with |eval|. This requires a
 new operator (and underlying opcode) {\it test!probe} which collects
@@ -4234,19 +4250,19 @@ state data into |Acc| at runtime.
 
 @<Function dec...@>=
 void compile_testing_probe (cell, cell, boolean);
-cell testing_build_probe (void);
+cell testing_build_probe (cell);
 
-@ @<List of opcode primitives@>=
-{ "test!probe", compile_testing_probe },
-
-@ @<Testing Opcodes@>=
+@ @<Testing opcodes@>=
 OP_TEST_PROBE,
 
-@ @<Testing op...@>=
+@ @<Testing imp...@>=
 case OP_TEST_PROBE:@/
-        Acc = testing_build_probe();
+        Acc = testing_build_probe(rts_pop(1));
         skip(1);
         break;
+
+@ @<Testing primitives@>=
+{ "test!probe", compile_testing_probe },
 
 @ @c
 void
@@ -4254,11 +4270,12 @@ compile_testing_probe (cell op,
                        cell args,
                        boolean tail_p)
 {
-        if (!null_p(args))
-                error(ERR_ARITY_SYNTAX, cons(op, args));
+        emitop(OP_PUSH);
+        emitq(args);
         emitop(OP_TEST_PROBE);
 }
 
+@ @c
 #define probe_push(n, o) do {             \
         vms_push(cons((o), NIL));         \
         vms_set(cons(sym(n), vms_ref())); \
@@ -4266,13 +4283,13 @@ compile_testing_probe (cell op,
         vms_set(cons(t, vms_ref()));      \
 } while (0)@;
 cell
-testing_build_probe (void)
+testing_build_probe (cell was_Acc)
 {
         cell t;
         vms_push(NIL);
-        probe_push("Acc", Acc);
+        probe_push("Acc", was_Acc);
+        probe_push("Args", Acc);
         probe_push("Env", Env);
-
         return vms_pop();
 }
 
@@ -4315,45 +4332,194 @@ assoc_value (cell alist,
         return cadr(r);
 }
 
-@ Again this test isn't thorough but I think it solves our needs for now.
+@ Again this test isn't thorough but I think it solves our needs
+for now. The important tests are that the arguments to |eval| are
+evaluated in the compile-time environment in which the |eval| is
+located, and that the program which the first argument evaluates
+to is itself evaluated in the environment the second argument
+evaluates to.
+
 @c
 void
 test_integrate_eval (void)
 {
-        cell t;
+        boolean ok;
+        cell t, m, p;
         char *prefix;
-        vm_clear();
-        Acc = read_cstring((prefix = "(eval '(test!probe))"));
-        interpret();
-        t = assoc_value(Acc, sym("Env"));
-        tap_ok(environment_p(t), "(environment? (assoc-value T 'Env))");
-        tap_ok(t == Root, "(eq? (assoc-value T 'Env) Root)");
-        /* TODO: Is it worth testing that |Acc == Prog ==
-           [OP_TEST_PROBE| |OP_RETURN]|? */
-        test_vm_state(prefix,
-                TEST_VMSTATE_NOT_RUNNING
-                | TEST_VMSTATE_NOT_INTERRUPTED
-                | TEST_VMSTATE_ENV_ROOT
-                | TEST_VMSTATE_PROG_MAIN
-                | TEST_VMSTATE_STACKS);
-
-@#      vm_clear();
-        Tmp_Test = env_empty();
-        env_set(Tmp_Test, sym("test!probe"),
-                env_search(Root, sym("test!probe")), TRUE);
-        Acc = read_cstring((prefix = "(eval '(test!probe) E)"));
-        cddr(Acc) = cons(Tmp_Test, NIL);
-        interpret();
-        t = assoc_value(Acc, sym("Env"));
-        tap_ok(environment_p(t), "(environment? (assoc-value T 'Env))");
-        tap_ok(t == Tmp_Test, "(eq? (assoc-value T 'Env) E)");
-        test_vm_state(prefix,
-                TEST_VMSTATE_NOT_RUNNING
-                | TEST_VMSTATE_NOT_INTERRUPTED
-                | TEST_VMSTATE_ENV_ROOT
-                | TEST_VMSTATE_PROG_MAIN
-                | TEST_VMSTATE_STACKS);
+        char msg[TEST_BUFSIZE] = {0};
+        @<Test integrating |eval|@>@;
 }
+
+@ This test bypasses looking up any of |eval|'s arguments and validates that
+the program's execution environment is correct; first with no argument
+and then with an artificially-constructed environment.
+
+@<Test integrating |eval|@>=
+vm_clear();
+Acc = read_cstring((prefix = "(eval '(test!probe))"));
+interpret();
+t = assoc_value(Acc, sym("Env"));
+tap_ok(environment_p(t), tmsgf("(environment? (assoc-value T 'Env))"));
+tap_ok(t == Root, tmsgf("(eq? (assoc-value T 'Env) Root)"));
+/* TODO: Is it worth testing that |Acc == Prog ==
+        [OP_TEST_PROBE| |OP_RETURN]|? */
+test_vm_state(prefix,
+        TEST_VMSTATE_NOT_RUNNING
+        | TEST_VMSTATE_NOT_INTERRUPTED
+        | TEST_VMSTATE_ENV_ROOT
+        | TEST_VMSTATE_PROG_MAIN
+        | TEST_VMSTATE_STACKS);
+
+@ @<Test integrating |eval|@>=
+vm_clear();
+Tmp_Test = env_empty();
+env_set(Tmp_Test, sym("test!probe"),
+        env_search(Root, sym("test!probe")), TRUE);
+Acc = read_cstring((prefix = "(eval '(test!probe) E)"));
+cddr(Acc) = cons(Tmp_Test, NIL);
+interpret();
+t = assoc_value(Acc, sym("Env"));
+tap_ok(environment_p(t), tmsgf("(environment? (assoc-value T 'Env))"));
+tap_ok(t == Tmp_Test, tmsgf("(eq? (assoc-value T 'Env) E)"));
+test_vm_state(prefix,
+        TEST_VMSTATE_NOT_RUNNING
+        | TEST_VMSTATE_NOT_INTERRUPTED
+        | TEST_VMSTATE_ENV_ROOT
+        | TEST_VMSTATE_PROG_MAIN
+        | TEST_VMSTATE_STACKS);
+
+@ Testing that |eval|'s arguments are evaluated in the correct
+|environment| is a little more difficult. First the |environment|
+with variables to supply |eval|'s arguments is constructed. These
+are the program source and another artificial |environment| which
+the program should be evaluated in.
+
+|t|, |m| \AM\ |p| are protected throughout as they are only links to
+somewhere in the outer |environment| which is protected by |Tmp_Test|.
+
+@<Test integrating |eval|@>=
+Tmp_Test = env_empty(); /* outer |environment| */
+env_set(Tmp_Test, sym("eval"),
+        env_search(Root, sym("eval")), TRUE);
+env_set(Tmp_Test, sym("alt-test!probe"),
+        env_search(Root, sym("error")), TRUE);
+@#
+t = read_cstring("(alt-test!probe 'oops)"); /* program; oops in case we
+                                               end up in |error| */
+env_set(Tmp_Test, sym("testing-program"), t, TRUE);
+@#
+m = env_empty(); /* evaluation |environmant| */
+env_set(Tmp_Test, sym("testing-environment"), m, TRUE);
+env_set(m, sym("alt-test!probe"),
+        env_search(Root, sym("test!probe")), TRUE);
+env_set(m, sym("testing-environment"), env_empty(), TRUE);
+p = read_cstring("(error wrong-program)");
+env_set(m, sym("testing-program"), p, TRUE);
+
+@ @<Test integrating |eval|@>=
+vm_clear();
+prefix = "(eval testing-program testing-environment)";
+Acc = read_cstring(prefix);
+Env = Tmp_Test;
+interpret();
+t = assoc_value(Acc, sym("Env"));
+tap_ok(environment_p(t), tmsgf("(environment? (assoc-value T 'Env))"));
+tap_ok(t == m, tmsgf("(eq? (assoc-value T 'Env) E)"));
+ok = tap_ok(test_integrate_eval_unchanged(prefix, Tmp_Test, m),
+        tmsgf("the environments are unchanged"));
+test_vm_state(prefix,
+        TEST_VMSTATE_NOT_RUNNING
+        | TEST_VMSTATE_NOT_INTERRUPTED
+        | TEST_VMSTATE_PROG_MAIN
+        | TEST_VMSTATE_STACKS);
+tap_ok(Env == Tmp_Test, tmsgf("(unchanged? Env)"));
+
+@ Neither of the two environments should be changed at all. That
+is |inner| should have exactly {\tt alt-test!probe}, {\tt
+testing-environment} \AM\ {\tt testing-program}, |outer| should
+have the same symbols with the different values as above and also
+|eval|.
+
+@<Function dec...@>=
+boolean test_integrate_eval_unchanged (char *, cell, cell);
+
+@ @c
+#define found(var)        \
+if (undefined_p(var))     \
+        (var) = cadar(t); \
+else                      \
+        fmore = btrue;
+#define FIND                                                  \
+while (!null_p(t)) {                                          \
+        if (caar(t) == sym("alt-test!probe")) {@+             \
+                found(fprobe);@+                              \
+        } else if (caar(t) == sym("eval")) {@+                \
+                found(feval);@+                               \
+        } else if (caar(t) == sym("testing-environment")) {@+ \
+                found(fenv);@+                                \
+        } else if (caar(t) == sym("testing-program")) {@+     \
+                found(fprog);@+                               \
+        } else                                                \
+                fmore = btrue;                                \
+        t = cdr(t);                                           \
+}
+@#@#
+boolean
+test_integrate_eval_unchanged (char *prefix,
+                               cell  outer,
+                               cell  inner)
+{
+        boolean oki, oko, fmore;
+        cell fenv, feval, fprobe, fprog;
+        cell oeval, oprobe;
+        cell iprobe;
+        cell t;
+        char msg[TEST_BUFSIZE] = {0};
+        @<Test the outer environment when testing |eval|@>@;
+        @<Test the inner environment when testing |eval|@>@;
+        return oko && oki;
+}
+
+@ @<Test the outer...@>=
+oko = tap_ok(environment_p(outer), tmsgf("(environment? outer)"));
+tap_ok(env_root_p(outer), tmsgf("(environment.is-root? outer)"));
+feval = fprobe = fenv = fprog = UNDEFINED;
+fmore = bfalse;
+if (oko) {
+        oeval = env_search(Root, sym("eval"));
+        oprobe = env_search(Root, sym("error"));
+        t = env_layer(outer);
+        FIND@;
+        if (!undefined_p(fprog)) {
+                /* TODO: write for |match(fprog,
+                        read_cstring("(alt-test!probe 'oops)"))| */
+                oko = list_p(fprog, FALSE, &t);
+                oko = oko && int_value(t) == 2;
+        }
+}
+tap_again(oko, !fmore && feval == oeval
+                && fprobe == oprobe && fenv == inner,
+                tmsgf("outer environment is unchanged"));
+
+@ @<Test the inner...@>=
+oki = tap_ok(environment_p(inner), tmsgf("(environment? inner)"));
+tap_ok(env_root_p(inner), tmsgf("(environment.is-root? inner)"));
+feval = fprobe = fenv = fprog = UNDEFINED;
+fmore = bfalse;
+if (oki) {
+        iprobe = env_search(Root, sym("test!probe"));
+        t = env_layer(inner);
+        FIND@;
+        if (!undefined_p(fprog)) {
+                /* TODO: write for |match(fprog,
+                        read_cstring("(error wrong-program)"))| */
+                oki = list_p(fprog, FALSE, &t);
+                oki = oki && int_value(t) == 2;
+        }
+}
+tap_again(oki, !fmore && undefined_p(feval)
+        && fprobe == iprobe && env_empty_p(fenv),
+        tmsgf("inner environment is unchanged"));
 
 @** TODO.
 
@@ -4382,6 +4548,9 @@ test_integrate_eval (void)
 { "root-environment", compile_env_root },
 { "set!", compile_set_m },
 { "define!", compile_define_m },
+#ifdef LL_TEST
+@<Testing primitives@>
+#endif
 
 @** REPL. The |main| loop is a simple repl.
 
