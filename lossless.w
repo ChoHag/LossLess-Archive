@@ -118,6 +118,8 @@ jump buffer to return to when all else fails.
 
 @<Initialise error handling@>=
 setjmp(Goto_Begin);
+Env = Root;
+rts_reset();
 
 @ To support user error handling a second jump buffer |Goto_Error|
 is established immediately after {\it beginning} run-time computation.
@@ -868,6 +870,7 @@ rts_prepare (int need)
 implementation.
 
 @d rts_clear(c) ((void) rts_pop(c))
+@d rts_reset() Fp = RTSp = -1;
 @c
 cell
 rts_pop (int count)
@@ -1612,7 +1615,6 @@ interpret (void)
         cell tmp; /* {\bf not} saved in |ROOTS| */
         @<Set up run-time...@>@;
         Running = 1;
-        RTSp = -1;
         while (Running && !Interrupt) {
                 ins = int_value(vector_ref(Prog, Ip));
                 switch (ins) {
