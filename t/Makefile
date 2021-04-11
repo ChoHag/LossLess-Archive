@@ -2,6 +2,7 @@ LLTEST_SCRIPTS :=       \
 	applicative.log \
 	eval.log        \
 	if.log          \
+	operative.log   \
 	pair.log
 
 test: sanity.log $(LLTEST_SCRIPTS)
@@ -19,7 +20,7 @@ sanity.log: ../lltest
 
 $(LLTEST_SCRIPTS): sanity.log ../lltest
 
-# eval environments
+# applicative closures
 applicative.log:
 	lltest a > applicative.log
 
@@ -30,6 +31,10 @@ eval.log:
 # if
 if.log:
 	lltest i > if.log
+
+# operative closures
+operative.log:
+	lltest o > operative.log
 
 # cons car cdr null? pair? set-car! set-cdr!
 pair.log:

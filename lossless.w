@@ -3872,6 +3872,7 @@ void test_integrate_eval (void);
 void test_integrate_if (void);
 void test_integrate_lambda (void);
 void test_integrate_pair (void);
+void test_integrate_vov (void);
 void test_vm_state (char *, int);
 char *test_vmsgf (char *, char *, char *, ...);
 #endif
@@ -4149,6 +4150,9 @@ case 'e':
         break;
 case 'i':
         test_integrate_if();@+
+        break;
+case 'o':
+        test_integrate_vov();@+
         break;
 case 'p':
         test_integrate_pair();@+
@@ -4667,7 +4671,7 @@ void
 test_integrate_lambda (void)
 {
         boolean ok;
-        cell t, m, p;
+        cell t, m;
         char *prefix;
         char msg[TEST_BUFSIZE] = {0};
         @<Test building a |lambda|@>@;
@@ -4735,6 +4739,103 @@ interpret();
 t = assoc_value(Acc, sym("Env"));
 tap_ok(environment_p(t), tmsgf("(environment? (assoc-value T 'Env))"));
 tap_ok(env_parent(t) == car(Tmp_Test), tmsgf("(eq? (assoc-value T 'Env) (env.parent E))"));
+test_vm_state_normal(prefix);
+tap_ok(Env == m, tmsgf("(unchanged? Env)"));
+
+@* Operatives. |vov| is used in the same separate two phases as
+|lambda| but it has more complex |environment| requirements to deal
+with when entering them. Creating them is largely the same from the
+perspective of these tests.
+
+@<Function dec...@>=
+cell test_build_vov (cell, boolean);
+
+@ @c
+void
+test_integrate_vov (void)
+{
+        boolean ok;
+        cell t, m, p;
+        char *prefix;
+        char msg[TEST_BUFSIZE] = {0};
+        printf("# \"...\" in place of vov's formals indicates"
+                " ((test-cte vov/environment))\n");
+        @<Test building a |vov|@>@;
+        @<Test entering a |vov|@>@;
+}
+
+@ @c
+cell
+test_build_vov (cell body,
+                boolean compile_p)
+{
+        cell r;
+        vms_push(body);
+        vms_push(Acc);
+        Acc = cons(Sym_vov_env, NIL);
+        Acc = cons(sym("tcte"), Acc);
+        Acc = cons(Acc, NIL); /* formals */
+        Acc = cons(Acc, cons(body, NIL));
+        Acc = cons(sym("vov"), Acc);
+        if (compile_p) {
+                vm_clear();
+                interpret();
+        }
+        r = Acc;
+        Acc = vms_pop();
+        vms_pop();
+        return r;
+}
+
+@ @<Test building a |vov|@>=
+vm_clear();
+Tmp_Test = Env = env_extend(Root);
+Acc = test_build_vov(NIL, bfalse);
+prefix = "(vov ...)";
+interpret();
+ok = tap_ok(operative_p(Acc), tmsgf("operative?"));
+tap_again(ok, pair_p(operative_formals(Acc)), tmsgf("formals"));
+@#
+if (ok) t = operative_closure(Acc);
+tap_again(ok, environment_p(car(t)), tmsgf("environment?"));
+tap_again(ok, car(t) == Tmp_Test, tmsgf("closure"));
+@#
+if (ok) t = cdr(t);
+tap_again(ok, car(t) != Prog, tmsgf("prog")); /* \AM\ what? */
+test_vm_state_normal(prefix);
+tap_ok(Env == Tmp_Test, tmsgf("(unchanged? Env)"));
+
+@ Upon entering an operative closure:
+
+\point 1. The local |environment| when it was created is extended
+to a new |environment| contaning the 1-3 |vov| arguments.
+
+\point 2. The local |environment| when it was entered is passed to
+the |vov| in the argument in the {\it vov/env} (or {\it vov/environment})
+position.
+
+And upon leaving it the stack and the local |environment| (|Env|)
+are restored.
+
+@<Test entering a |vov|@>=
+Env = env_extend(Root);
+env_set(Env, sym("anything"), sym("anything-else"), btrue);
+t = sym("x");
+Tmp_Test = test_build_vov(cons(sym("test!probe"), NIL), btrue);
+Tmp_Test = cons(Env, Tmp_Test);
+m = Env = env_extend(Root);
+Acc = cons(cdr(Tmp_Test), NIL);
+prefix = "((vov ... (test!probe)))";
+vm_clear();
+interpret();
+t = assoc_value(Acc, sym("Env"));
+ok = tap_ok(environment_p(t),
+            tmsgf("(environment? (assoc-value T 'Env))"));
+tap_again(ok, env_parent(t) == car(Tmp_Test),
+          tmsgf("(eq? (assoc-value T 'Env) (env.parent E))"));
+if (ok) p = env_search(t, sym("tcte"));
+tap_again(ok, environment_p(p), tmsgf("(environment? test-cte)"));
+tap_again(ok, p == m, tmsgf("(eq? test-cte (current-environment))"));
 test_vm_state_normal(prefix);
 tap_ok(Env == m, tmsgf("(unchanged? Env)"));
 
