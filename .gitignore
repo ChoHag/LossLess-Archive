@@ -16,6 +16,7 @@ tmp/
 *.scn
 *.toc
 lossless
+lltest
 lossless.c
 lossless.pdf
 lossless.tex

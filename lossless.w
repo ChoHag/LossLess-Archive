@@ -3848,17 +3848,17 @@ emitop(OP_POP);
 patch(goto_finish, int_new(Here));
 emitop(OP_POP);
 
-@** Testing. \LL/ includes (hah!) a comprehensive test suite. It
-also includes a cut-down version which gets built into a separate
-binary with the extra facilities required by tests that can't be
-performed in a regular run-time script.
+@** Testing. A comprehensive test suite is planned for \LL/ but a
+testing tool would be no good if it wasn't itself reliable. During
+the build process a second binary is produced with additional
+functionality exposing internal data structures and processes
+necessary to test the compiled \LL/ executable.
 
 \CEE/'s preprocessor is used to define an alternate entry-point to
-\LL/ by renaming |main| and (probably) include some extra opcodes
-and operators. Other testing functions unused by the \LL/ runtime
-are expected to be removed by the \CEE/-compiler or linker rather
-than obscuring this source code by drowning it in preprocessor
-directives.
+\LL/ by renaming |main| and adding testing opcodes and operators.
+Other testing functions unused by the \LL/ runtime are expected to
+be removed by the \CEE/-compiler or linker rather than obscuring
+this source code by drowning it in preprocessor directives.
 
 @<Function dec...@>=
 #ifdef LL_TEST
@@ -3869,7 +3869,7 @@ void test_integrate_eval (void);
 void test_integrate_pair (void);
 #endif
 
-@ Some tests need to be able to save data from the maw of the garbage
+@ Tests need to be able to save data from the maw of the garbage
 collector.
 
 @<Global var...@>=
@@ -3899,29 +3899,85 @@ main (int    argc,
                 if (!first)
                         return EXIT_FAILURE;
                 first = bfalse;
-                switch(argv[1][0]) {
-                case '0':
-                        test_compile();@+
-                        break; /* zero */
-                case 'e':
-                        test_integrate_eval();@+
-                        break;
-                case 'p':
-                        test_integrate_pair();@+
-                        break;
-                default:
-                        error(ERR_UNEXPECTED, NIL);@+
-                        break;
-                }
+                @<Select a testing entry-point@>
         }
-        tap_plan(0);
         return EXIT_SUCCESS;
 }
 #endif
 
-@* Internal Test ``Suite''. The internal test suite tracks the ID
-of the current test and includes functions to write results suitable
-for a TAP parser to stdout.
+@ Some tests need to examine a snapshot of the interpreter's run-time
+state which they do by calling {\it test!probe}.
+
+@<Function dec...@>=
+void compile_testing_probe (cell, cell, boolean);
+cell testing_build_probe (cell);
+
+@ @<Testing opcodes@>=
+OP_TEST_PROBE,
+
+@ @<Testing imp...@>=
+case OP_TEST_PROBE:@/
+        Acc = testing_build_probe(rts_pop(1));
+        skip(1);
+        break;
+
+@ @<Testing primitives@>=
+{ "test!probe", compile_testing_probe },
+
+@ @c
+void
+compile_testing_probe (cell op __unused,
+                       cell args,
+                       boolean tail_p __unused)
+{
+        emitop(OP_PUSH);
+        emitq(args);
+        emitop(OP_TEST_PROBE);
+}
+
+@ {\bf TODO:} This should make a deep copy of the objects not merely
+reference them.
+
+@c
+#define probe_push(n, o) do {             \
+        vms_push(cons((o), NIL));         \
+        vms_set(cons(sym(n), vms_ref())); \
+        t = vms_pop();                    \
+        vms_set(cons(t, vms_ref()));      \
+} while (0)@;
+@#
+cell
+testing_build_probe (cell was_Acc)
+{
+        cell t;
+        vms_push(NIL);
+        probe_push("Acc", was_Acc);
+        probe_push("Args", Acc);
+        probe_push("Env", Env);
+        return vms_pop();
+}
+#undef probe_push
+
+@* Internal Test ``Suite''. The Perl ecosystem has a well-deserved
+reputation for its thorough testing regime and the quality (if not
+necessarily the quality) of the results so \LL/ is deliberately
+aping the interfaces that were developed there.
+
+The \LL/ internal tests are a collection of test ``script''s each
+of which massages some \LL/ function or other and then reports what
+happened in a series of binary pass/fail ``test''s. A test in this
+sense isn't the performance of any activity but comparing the result
+of having {\it already performed} some activity with the expected
+outcome. Any one action normally requires a lot of individual tests
+to confirm the validity of its result.
+
+This design is modelled on the \pdfURL{Test Anything
+Protocol}{http://testanything.org/} and the test scripts call an
+API that looks suspiciously like a tiny version of {\it Test::Simple}.
+
+|tap_plan| should be called exactly once per test script, either
+at the beginning if the total number of tests is known in advance
+or at the end with an argument of |0| otherwise.
 
 @d tap_fail(m) tap_ok(bfalse, (m))
 @d tap_pass(m) tap_ok(btrue, (m))
@@ -3964,25 +4020,14 @@ tap_ok (boolean result,
         return result ? btrue : bfalse;
 }
 
-@* Sanity Test. This seemingly pointless test achieves two goals:
-the test harness can run it first and can abort the entire test
-suite if it fails, and it provides a simple demonstration of how
-individual test scripts interact with the outside world, without
-obscuring it with any actual testing.
+@ \LL/ is a programming language and so a lot of its tests involve
+code. |test_interpret_vmsgf| formats these test messages in a
+consistent way. The caller is expected to maintain its own buffer
+of |TEST_BUFSIZE| bytes a pointer to which goes in and out so that
+the function can be used in-line.
 
-@c
-void
-test_compile (void)
-{
-        tap_plan(1);
-        tap_pass("LossLess compiles and runs");
-}
-
-@* Interpreter Tests. Testing the interpreter means getting it to
-evaluate some code, which needs to be included in each test's
-description. This function relies on the caller to maintain a
-fixed-size buffer of |TEST_BUFSIZE| bytes that it can write into,
-which the macro |tmsgf| hardcodes the name of for brevity.
+|tmsgf| hardcodes the names of the variables a function passes into
+|test_interpret_vmsgf| for brevity.
 
 @d TEST_BUFSIZE 1024
 @c
@@ -4005,9 +4050,51 @@ test_interpret_vmsgf (char *tsrc,
         return tmsg;
 }
 
-@ Skipping over a bunch of boring but important unit tests for the
-data storage, the garbage collector, \AM c. we arrive at the
-critical integration between the compiler and the interpreter.
+@ Each \LL/ internal test script is a function named ``{\it
+|test_|...}''.  Other prefixes are used for supporting functions.
+Arguments to the testing binary determine which test script to run
+or enter a standard REPL in the testing |environment| if there are
+none.
+
+{\bf TODO:} Add a banner and run-time detection to make it clear
+the testing environment is not for production use.
+
+@<Select a test...@>=
+switch(argv[1][0]) {
+case '0':
+        test_compile();@+
+        break; /* zero */
+case 'e':
+        test_integrate_eval();@+
+        break;
+case 'p':
+        test_integrate_pair();@+
+        break;
+default:
+        error(ERR_UNEXPECTED, NIL);@+
+        break;
+}
+tap_plan(0);
+
+@* Sanity Test. This seemingly pointless test achieves two goals:
+the test harness can run it first and can abort the entire test
+suite if it fails, and it provides a simple demonstration of how
+individual test scripts interact with the outside world, without
+obscuring it with any actual testing.
+
+@c
+void
+test_compile (void)
+{
+        tap_plan(1);
+        tap_pass("LossLess compiles and runs");
+}
+
+@* Unit Tests. Skipping over a bunch of boring but important unit
+tests for the data storage, the garbage collector, \AM c. ...
+
+@* Interpreter Tests. We arrive at the critical integration between
+the compiler and the interpreter.
 
 Calling the following tests integration tests may be thought of as
 a bit of a misnomer; if so consider them unit tests of the integration
@@ -4059,7 +4146,10 @@ test_vm_state (char *prefix,
 }
 
 @*1 Pairs. First a set of assertions that the simpler opcodes work
-as advertised. This code is extremely boring and repetetive.
+as advertised. These are |cons|, |car|, |cdr|, {\it null?}, {\it
+@q This || vs. {} is getting annoying @>
+pair?}, {\it set-car!} \AM\ {\it set-cdr!}. This code is extremely
+boring and repetetive.
 
 @c
 void
@@ -4081,7 +4171,12 @@ test_integrate_pair (void)
         @<Test integrating set-cdr!@>@;
 }
 
-@ These tests could perhaps be made more thorough but I'm not sure what it would achieve.
+@ These tests could perhaps be made more thorough but I'm not sure
+what it would achieve. Testing the non-mutating calls is basically
+the same: Prepare \AM\ interpret code that will call the operator
+and then test that the result is correct and that internal state
+is (not) changed as expected.
+
 @<Test integrating cons@>=
 vm_clear();
 Acc = read_cstring(prefix = "(cons 24 42)");
@@ -4206,7 +4301,14 @@ test_vm_state(prefix,
         | TEST_VMSTATE_PROG_MAIN
         | TEST_VMSTATE_STACKS);
 
-@ @<Test integrating set-car!@>=
+@ Testing that pair mutation works correctly requires some more
+work. A pair is created and saved in |Tmp_Test| then the code which
+will be interpreted is created by hand to inject that pair directly
+and avoid looking for its value in an |environment|.
+
+{\bf TODO:} duplicate these tests for symbols that are looked up.
+
+@<Test integrating set-car!@>=
 vm_clear();
 Tmp_Test = cons(marco, water);
 t = atom(sym(SYNTAX_QUOTE), Tmp_Test, FORMAT_SYNTAX);
@@ -4244,115 +4346,27 @@ tap_again(okok, symbol_p(cdr(Tmp_Test)) && cdr(Tmp_Test) == polo,
 bugs, the real difficulty is in ensuring the correct |environment|
 is in place at the right time.
 
-We'll skip |error| for now and start with |eval|. This requires a
-new operator (and underlying opcode) {\it test!probe} which collects
-state data into |Acc| at runtime.
-
-@<Function dec...@>=
-void compile_testing_probe (cell, cell, boolean);
-cell testing_build_probe (cell);
-
-@ @<Testing opcodes@>=
-OP_TEST_PROBE,
-
-@ @<Testing imp...@>=
-case OP_TEST_PROBE:@/
-        Acc = testing_build_probe(rts_pop(1));
-        skip(1);
-        break;
-
-@ @<Testing primitives@>=
-{ "test!probe", compile_testing_probe },
-
-@ @c
-void
-compile_testing_probe (cell op,
-                       cell args,
-                       boolean tail_p)
-{
-        emitop(OP_PUSH);
-        emitq(args);
-        emitop(OP_TEST_PROBE);
-}
-
-@ @c
-#define probe_push(n, o) do {             \
-        vms_push(cons((o), NIL));         \
-        vms_set(cons(sym(n), vms_ref())); \
-        t = vms_pop();                    \
-        vms_set(cons(t, vms_ref()));      \
-} while (0)@;
-cell
-testing_build_probe (cell was_Acc)
-{
-        cell t;
-        vms_push(NIL);
-        probe_push("Acc", was_Acc);
-        probe_push("Args", Acc);
-        probe_push("Env", Env);
-        return vms_pop();
-}
-
-@ With the new opcode ready we can test |eval| but that test needs
-association lists which we'll move elsewhere later.
-@c
-cell
-assoc_member (cell alist,
-              cell needle)
-{
-        if (!symbol_p(needle))
-                error(ERR_ARITY_SYNTAX, NIL);
-        if (!list_p(alist, FALSE, NULL))
-                error(ERR_ARITY_SYNTAX, NIL);
-        for (; pair_p(alist); alist = cdr(alist))
-                if (caar(alist) == needle)
-                        return car(alist);
-        return FALSE;
-}
-
-cell
-assoc_content (cell alist,
-               cell needle)
-{
-        cell r;
-        r = assoc_member(alist, needle);
-        if (!pair_p(r))
-                error(ERR_UNEXPECTED, r);
-        return cdr(r);
-}
-
-cell
-assoc_value (cell alist,
-             cell needle)
-{
-        cell r;
-        r = assoc_member(alist, needle);
-        if (!pair_p(cdr(r)))
-                error(ERR_UNEXPECTED, r);
-        return cadr(r);
-}
-
-@ Again this test isn't thorough but I think it solves our needs
-for now. The important tests are that the arguments to |eval| are
-evaluated in the compile-time environment in which the |eval| is
-located, and that the program which the first argument evaluates
-to is itself evaluated in the environment the second argument
-evaluates to.
+We'll skip |error| for now and start with |eval|. Again this test
+isn't thorough but I think it's good enough for now. The important
+tests are that the arguments to |eval| are evaluated in the
+compile-time environment in which the |eval| is located, and that
+the program which the first argument evaluates to is itself evaluated
+in the environment the second argument evaluates to.
 
 @c
 void
 test_integrate_eval (void)
 {
-        boolean ok;
         cell t, m, p;
         char *prefix;
         char msg[TEST_BUFSIZE] = {0};
         @<Test integrating |eval|@>@;
 }
 
-@ This test bypasses looking up any of |eval|'s arguments and validates that
-the program's execution environment is correct; first with no argument
-and then with an artificially-constructed environment.
+@ The first test of |eval| calls into it without needing to look
+up any of its arguments. The program to be evaluated calls {\it
+test!probe} and its result is examined. First evaluating in the
+current environment which is here |Root|.
 
 @<Test integrating |eval|@>=
 vm_clear();
@@ -4370,12 +4384,18 @@ test_vm_state(prefix,
         | TEST_VMSTATE_PROG_MAIN
         | TEST_VMSTATE_STACKS);
 
-@ @<Test integrating |eval|@>=
+@ And then testing with a second argument of an artificially-constructed
+environment.
+
+The probing symbol is given a different name to shield against it
+being found in |Root| and fooling the tests into passing.
+
+@<Test integrating |eval|@>=
 vm_clear();
 Tmp_Test = env_empty();
-env_set(Tmp_Test, sym("test!probe"),
+env_set(Tmp_Test, sym("alt-test!probe"),
         env_search(Root, sym("test!probe")), TRUE);
-Acc = read_cstring((prefix = "(eval '(test!probe) E)"));
+Acc = read_cstring((prefix = "(eval '(alt-test!probe) E)"));
 cddr(Acc) = cons(Tmp_Test, NIL);
 interpret();
 t = assoc_value(Acc, sym("Env"));
@@ -4389,10 +4409,10 @@ test_vm_state(prefix,
         | TEST_VMSTATE_STACKS);
 
 @ Testing that |eval|'s arguments are evaluated in the correct
-|environment| is a little more difficult. First the |environment|
-with variables to supply |eval|'s arguments is constructed. These
-are the program source and another artificial |environment| which
-the program should be evaluated in.
+|environment| is a little more difficult. The |environment| with
+variables to supply |eval|'s arguments is constructed. These are
+the program source and another artificial |environment| which the
+program should be evaluated in.
 
 |t|, |m| \AM\ |p| are protected throughout as they are only links to
 somewhere in the outer |environment| which is protected by |Tmp_Test|.
@@ -4416,7 +4436,12 @@ env_set(m, sym("testing-environment"), env_empty(), TRUE);
 p = read_cstring("(error wrong-program)");
 env_set(m, sym("testing-program"), p, TRUE);
 
-@ @<Test integrating |eval|@>=
+@ |eval| is then called in the newly-constructed |environment| by
+putting it in |Env| before calling |interpret|, mimicking what
+|frame_push| would do when entering the closure the |environment|
+represents.
+
+@<Test integrating |eval|@>=
 vm_clear();
 prefix = "(eval testing-program testing-environment)";
 Acc = read_cstring(prefix);
@@ -4425,8 +4450,7 @@ interpret();
 t = assoc_value(Acc, sym("Env"));
 tap_ok(environment_p(t), tmsgf("(environment? (assoc-value T 'Env))"));
 tap_ok(t == m, tmsgf("(eq? (assoc-value T 'Env) E)"));
-ok = tap_ok(test_integrate_eval_unchanged(prefix, Tmp_Test, m),
-        tmsgf("the environments are unchanged"));
+test_integrate_eval_unchanged(prefix, Tmp_Test, m);
 test_vm_state(prefix,
         TEST_VMSTATE_NOT_RUNNING
         | TEST_VMSTATE_NOT_INTERRUPTED
@@ -4441,7 +4465,7 @@ have the same symbols with the different values as above and also
 |eval|.
 
 @<Function dec...@>=
-boolean test_integrate_eval_unchanged (char *, cell, cell);
+void test_integrate_eval_unchanged (char *, cell, cell);
 
 @ @c
 #define found(var)        \
@@ -4464,7 +4488,7 @@ while (!null_p(t)) {                                          \
         t = cdr(t);                                           \
 }
 @#@#
-boolean
+void
 test_integrate_eval_unchanged (char *prefix,
                                cell  outer,
                                cell  inner)
@@ -4477,8 +4501,9 @@ test_integrate_eval_unchanged (char *prefix,
         char msg[TEST_BUFSIZE] = {0};
         @<Test the outer environment when testing |eval|@>@;
         @<Test the inner environment when testing |eval|@>@;
-        return oko && oki;
 }
+#undef found
+#undef FIND
 
 @ @<Test the outer...@>=
 oko = tap_ok(environment_p(outer), tmsgf("(environment? outer)"));
@@ -4552,7 +4577,7 @@ tap_again(oki, !fmore && undefined_p(feval)
 @<Testing primitives@>
 #endif
 
-@** REPL. The |main| loop is a simple repl.
+@* REPL. The |main| loop is a simple repl.
 
 @c
 #ifdef LL_TEST
@@ -4586,6 +4611,49 @@ main (int    argc,
         if (Interrupt)
                 printf("Interrupted");
         return EXIT_SUCCESS;
+}
+
+@* Association Lists.
+@<Function dec...@>=
+cell assoc_member (cell, cell);
+cell assoc_content (cell, cell);
+cell assoc_value (cell, cell);
+
+@ @c
+cell
+assoc_member (cell alist,
+              cell needle)
+{
+        if (!symbol_p(needle))
+                error(ERR_ARITY_SYNTAX, NIL);
+        if (!list_p(alist, FALSE, NULL))
+                error(ERR_ARITY_SYNTAX, NIL);
+        for (; pair_p(alist); alist = cdr(alist))
+                if (caar(alist) == needle)
+                        return car(alist);
+        return FALSE;
+}
+
+cell
+assoc_content (cell alist,
+               cell needle)
+{
+        cell r;
+        r = assoc_member(alist, needle);
+        if (!pair_p(r))
+                error(ERR_UNEXPECTED, r);
+        return cdr(r);
+}
+
+cell
+assoc_value (cell alist,
+             cell needle)
+{
+        cell r;
+        r = assoc_member(alist, needle);
+        if (!pair_p(cdr(r)))
+                error(ERR_UNEXPECTED, r);
+        return cadr(r);
 }
 
 @** Index.
