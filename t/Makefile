@@ -10,17 +10,13 @@ test: sanity.log $(LLTEST_SCRIPTS)
 	fi
 
 clean:
-	rm -f *.log
+	rm -f core *.core *.log
 
 # Does it compile?
-sanity.log:
+sanity.log: ../lltest
 	lltest 0 > sanity.log
 
-$(LLTEST_SCRIPTS): sanity.log
-
-# cons car cdr null? pair? set-car! set-cdr!
-pair.log:
-	lltest p > pair.log
+$(LLTEST_SCRIPTS): sanity.log ../lltest
 
 # eval environments
 eval.log:
@@ -29,3 +25,7 @@ eval.log:
 # if
 if.log:
 	lltest i > if.log
+
+# cons car cdr null? pair? set-car! set-cdr!
+pair.log:
+	lltest p > pair.log

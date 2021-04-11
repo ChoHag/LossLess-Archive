@@ -6,7 +6,9 @@ CFLAGS+=  -Wall -Wpedantic -Wextra
 lossless: lossless.c
 	$(CC) $(CFLAGS) -o lossless lossless.c
 
-lltest: lossless.c
+# If lltest doesn't depend on lossless it can result in an old llbuild
+# of lltest not being replaced under some conditions.
+lltest: lossless.c lossless
 	$(CC) $(CFLAGS) -DLL_TEST -o lltest lossless.c
 
 lossless.pdf: lossless.tex
@@ -26,6 +28,6 @@ test: lossless lltest
 	PATH=..:$$PATH $(MAKE) -C t
 
 clean:
-	rm -f *.core *.idx *.log *.scn *.toc *.o
+	rm -f core *.core *.idx *.log *.scn *.toc *.o
 	rm -f lossless.c lossless lltest lossless.tex lossless.pdf
 	$(MAKE) -C t clean

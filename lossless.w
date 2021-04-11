@@ -2435,13 +2435,17 @@ case OP_JUMP:@/
         Ip = int_value(fetch(1));
         break;
 case OP_JUMP_FALSE:@/
-        if (false_p(Acc))
+        if (void_p(Acc))
+                error(ERR_UNEXPECTED, VOID);
+        else if (false_p(Acc))
                 Ip = int_value(fetch(1));
         else
                 skip(2);
         break;
 case OP_JUMP_TRUE:@/
-        if (true_p(Acc))
+        if (void_p(Acc))
+                error(ERR_UNEXPECTED, VOID);
+        else if (true_p(Acc))
                 Ip = int_value(fetch(1));
         else
                 skip(2);
