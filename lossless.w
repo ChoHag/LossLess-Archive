@@ -3866,6 +3866,7 @@ int test_main (int, char **);
 @#
 void test_compile (void);
 void test_integrate_eval (void);
+void test_integrate_if (void);
 void test_integrate_pair (void);
 #endif
 
@@ -4077,6 +4078,9 @@ case '0':
 case 'e':
         test_integrate_eval();@+
         break;
+case 'i':
+        test_integrate_if();@+
+        break;
 case 'p':
         test_integrate_pair();@+
         break;
@@ -4196,120 +4200,78 @@ tap_again(ok, integer_p(car(Acc)) && int_value(car(Acc)) == 24,
         tmsgf("car"));
 tap_again(ok, integer_p(car(Acc)) && int_value(cdr(Acc)) == 42,
         tmsgf("cdr"));
-test_vm_state(prefix,
-        TEST_VMSTATE_NOT_RUNNING
-        | TEST_VMSTATE_NOT_INTERRUPTED
-        | TEST_VMSTATE_ENV_ROOT
-        | TEST_VMSTATE_PROG_MAIN
-        | TEST_VMSTATE_STACKS);
+test_vm_state_full(prefix);
 
 @ @<Test integrating car@>=
 vm_clear();
-Tmp_Test = cons(int_new(42), polo);
-t = atom(sym(SYNTAX_QUOTE), Tmp_Test, FORMAT_SYNTAX); /* TODO: constructor */
-t = cons(t, NIL);
-Acc = cons(sym("car"), t);
+t = cons(int_new(42), polo);
+t = cons(synquote_new(t), NIL);
+Tmp_Test = Acc = cons(sym("car"), t);
 prefix = "(car '(42 . polo))";
 interpret();
-ok = tap_ok(integer_p(Acc) && int_value(Acc) == 42, tmsgf("integer?"));
-test_vm_state(prefix,
-        TEST_VMSTATE_NOT_RUNNING
-        | TEST_VMSTATE_NOT_INTERRUPTED
-        | TEST_VMSTATE_ENV_ROOT
-        | TEST_VMSTATE_PROG_MAIN
-        | TEST_VMSTATE_STACKS);
+tap_ok(integer_p(Acc) && int_value(Acc) == 42, tmsgf("integer?"));
+test_vm_state_full(prefix);
 
 @ @<Test integrating cdr@>=
 vm_clear();
-@/@,/* same |Tmp_Test|; safe to assume |t| is safe? */
 Acc = cons(sym("cdr"), t);
 prefix = "(cdr '(42 . polo))";
 interpret();
-ok = tap_ok(symbol_p(Acc) && Acc == polo, tmsgf("symbol?"));
-test_vm_state(prefix,
-        TEST_VMSTATE_NOT_RUNNING
-        | TEST_VMSTATE_NOT_INTERRUPTED
-        | TEST_VMSTATE_ENV_ROOT
-        | TEST_VMSTATE_PROG_MAIN
-        | TEST_VMSTATE_STACKS);
+tap_ok(symbol_p(Acc) && Acc == polo, tmsgf("symbol?"));
+test_vm_state_full(prefix);
 
 @ @<Test integrating null?@>=
 vm_clear();
-Acc = cons(sym("null?"), cons(NIL, NIL));
+t = cons(NIL, NIL);
+Acc = cons(sym("null?"), t);
 prefix = "(null? ())";
 interpret();
-ok = tap_ok(true_p(Acc), tmsgf("true?"));
-test_vm_state(prefix,
-        TEST_VMSTATE_NOT_RUNNING
-        | TEST_VMSTATE_NOT_INTERRUPTED
-        | TEST_VMSTATE_ENV_ROOT
-        | TEST_VMSTATE_PROG_MAIN);
+tap_ok(true_p(Acc), tmsgf("true?"));
+test_vm_state_full(prefix);
 
 @ @<Test integrating null?@>=
 vm_clear();
-t = atom(sym(SYNTAX_QUOTE), polo, FORMAT_SYNTAX);
-Acc = cons(sym("null?"), cons(t, NIL));
+t = cons(synquote_new(polo), NIL);
+Acc = cons(sym("null?"), t);
 prefix = "(null? 'polo!)";
 interpret();
-ok = tap_ok(false_p(Acc), tmsgf("false?"));
-test_vm_state(prefix,
-        TEST_VMSTATE_NOT_RUNNING
-        | TEST_VMSTATE_NOT_INTERRUPTED
-        | TEST_VMSTATE_ENV_ROOT
-        | TEST_VMSTATE_PROG_MAIN);
+tap_ok(false_p(Acc), tmsgf("false?"));
+test_vm_state_full(prefix);
 
 @ @<Test integrating null?@>=
 vm_clear();
-t = atom(sym(SYNTAX_QUOTE), cons(NIL, NIL), FORMAT_SYNTAX);
+t = synquote_new(cons(NIL, NIL));
 Acc = cons(sym("null?"), cons(t, NIL));
 prefix = "(null? '(()))";
 interpret();
-ok = tap_ok(false_p(Acc), tmsgf("false?"));
-test_vm_state(prefix,
-        TEST_VMSTATE_NOT_RUNNING
-        | TEST_VMSTATE_NOT_INTERRUPTED
-        | TEST_VMSTATE_ENV_ROOT
-        | TEST_VMSTATE_PROG_MAIN
-        | TEST_VMSTATE_STACKS);
+tap_ok(false_p(Acc), tmsgf("false?"));
+test_vm_state_full(prefix);
 
 @ @<Test integrating pair?@>=
 vm_clear();
 Acc = cons(sym("pair?"), cons(NIL, NIL));
 prefix = "(pair? ())";
 interpret();
-ok = tap_ok(false_p(Acc), tmsgf("false?"));
-test_vm_state(prefix,
-        TEST_VMSTATE_NOT_RUNNING
-        | TEST_VMSTATE_NOT_INTERRUPTED
-        | TEST_VMSTATE_ENV_ROOT
-        | TEST_VMSTATE_PROG_MAIN);
+tap_ok(false_p(Acc), tmsgf("false?"));
+test_vm_state_full(prefix);
 
 @ @<Test integrating pair?@>=
 vm_clear();
-t = atom(sym(SYNTAX_QUOTE), polo, FORMAT_SYNTAX);
-Acc = cons(sym("pair?"), cons(t, NIL));
+t = cons(synquote_new(polo), NIL);
+Acc = cons(sym("pair?"), t);
 prefix = "(pair? 'polo!)";
 interpret();
-ok = tap_ok(false_p(Acc), tmsgf("false?"));
-test_vm_state(prefix,
-        TEST_VMSTATE_NOT_RUNNING
-        | TEST_VMSTATE_NOT_INTERRUPTED
-        | TEST_VMSTATE_ENV_ROOT
-        | TEST_VMSTATE_PROG_MAIN);
+tap_ok(false_p(Acc), tmsgf("false?"));
+test_vm_state_full(prefix);
 
 @ @<Test integrating pair?@>=
 vm_clear();
-t = atom(sym(SYNTAX_QUOTE), cons(NIL, NIL), FORMAT_SYNTAX);
+t = synquote_new(cons(NIL, NIL));
 Acc = cons(sym("pair?"), cons(t, NIL));
 prefix = "(pair? '(()))";
 interpret();
-ok = tap_ok(true_p(Acc), tmsgf("true?"));
-test_vm_state(prefix,
-        TEST_VMSTATE_NOT_RUNNING
-        | TEST_VMSTATE_NOT_INTERRUPTED
-        | TEST_VMSTATE_ENV_ROOT
-        | TEST_VMSTATE_PROG_MAIN
-        | TEST_VMSTATE_STACKS);
+tap_ok(true_p(Acc), tmsgf("true?"));
+test_vm_state_full(prefix);
 
 @ Testing that pair mutation works correctly requires some more
 work. A pair is created and saved in |Tmp_Test| then the code which
@@ -4321,15 +4283,13 @@ and avoid looking for its value in an |environment|.
 @<Test integrating set-car!@>=
 vm_clear();
 Tmp_Test = cons(marco, water);
-t = atom(sym(SYNTAX_QUOTE), Tmp_Test, FORMAT_SYNTAX);
-t = atom(sym(SYNTAX_QUOTE), polo, FORMAT_SYNTAX);
-t = cons(t, NIL);
-t = cons(atom(sym(SYNTAX_QUOTE), Tmp_Test, FORMAT_SYNTAX), t);
+t = cons(synquote_new(polo), NIL);
+t = cons(synquote_new(Tmp_Test), t);
 Acc = cons(sym("set-car!"), t);
 prefix = "(set-car! '(marco . |fish out of water!|) 'polo!)";
 interpret();
 ok = tap_ok(void_p(Acc), tmsgf("void?"));
-okok = ok = tap_ok(pair_p(Tmp_Test), tmsgf("(pair? T)"));
+okok = tap_ok(ok && pair_p(Tmp_Test), tmsgf("(pair? T)"));
 tap_again(ok, symbol_p(car(Tmp_Test)) && car(Tmp_Test) == polo,
           tmsgf("(eq? (car T) 'polo!)"));
 tap_again(okok, symbol_p(cdr(Tmp_Test)) && cdr(Tmp_Test) == water,
@@ -4338,15 +4298,13 @@ tap_again(okok, symbol_p(cdr(Tmp_Test)) && cdr(Tmp_Test) == water,
 @ @<Test integrating set-cdr!@>=
 vm_clear();
 Tmp_Test = cons(water, marco);
-t = atom(sym(SYNTAX_QUOTE), Tmp_Test, FORMAT_SYNTAX);
-t = atom(sym(SYNTAX_QUOTE), polo, FORMAT_SYNTAX);
-t = cons(t, NIL);
-t = cons(atom(sym(SYNTAX_QUOTE), Tmp_Test, FORMAT_SYNTAX), t);
+t = cons(synquote_new(polo), NIL);
+t = cons(synquote_new(Tmp_Test), t);
 Acc = cons(sym("set-cdr!"), t);
 prefix = "(set-cdr! '(|fish out of water!| . marco) 'polo!)";
 interpret();
 ok = tap_ok(void_p(Acc), tmsgf("void?"));
-okok = ok = tap_ok(pair_p(Tmp_Test), tmsgf("(pair? T)"));
+okok = tap_ok(ok && pair_p(Tmp_Test), tmsgf("(pair? T)"));
 tap_again(ok, symbol_p(car(Tmp_Test)) && car(Tmp_Test) == water,
           tmsgf("(eq? (car T) '|fish out of water!|)"));
 tap_again(okok, symbol_p(cdr(Tmp_Test)) && cdr(Tmp_Test) == polo,
@@ -4387,12 +4345,7 @@ tap_ok(environment_p(t), tmsgf("(environment? (assoc-value T 'Env))"));
 tap_ok(t == Root, tmsgf("(eq? (assoc-value T 'Env) Root)"));
 /* TODO: Is it worth testing that |Acc == Prog ==
         [OP_TEST_PROBE| |OP_RETURN]|? */
-test_vm_state(prefix,
-        TEST_VMSTATE_NOT_RUNNING
-        | TEST_VMSTATE_NOT_INTERRUPTED
-        | TEST_VMSTATE_ENV_ROOT
-        | TEST_VMSTATE_PROG_MAIN
-        | TEST_VMSTATE_STACKS);
+test_vm_state_full(prefix);
 
 @ And then testing with a second argument of an artificially-constructed
 environment.
@@ -4411,12 +4364,7 @@ interpret();
 t = assoc_value(Acc, sym("Env"));
 tap_ok(environment_p(t), tmsgf("(environment? (assoc-value T 'Env))"));
 tap_ok(t == Tmp_Test, tmsgf("(eq? (assoc-value T 'Env) E)"));
-test_vm_state(prefix,
-        TEST_VMSTATE_NOT_RUNNING
-        | TEST_VMSTATE_NOT_INTERRUPTED
-        | TEST_VMSTATE_ENV_ROOT
-        | TEST_VMSTATE_PROG_MAIN
-        | TEST_VMSTATE_STACKS);
+test_vm_state_full(prefix);
 
 @ Testing that |eval|'s arguments are evaluated in the correct
 |environment| is a little more difficult. The |environment| with
@@ -4461,11 +4409,7 @@ t = assoc_value(Acc, sym("Env"));
 tap_ok(environment_p(t), tmsgf("(environment? (assoc-value T 'Env))"));
 tap_ok(t == m, tmsgf("(eq? (assoc-value T 'Env) E)"));
 test_integrate_eval_unchanged(prefix, Tmp_Test, m);
-test_vm_state(prefix,
-        TEST_VMSTATE_NOT_RUNNING
-        | TEST_VMSTATE_NOT_INTERRUPTED
-        | TEST_VMSTATE_PROG_MAIN
-        | TEST_VMSTATE_STACKS);
+test_vm_state_normal(prefix);
 tap_ok(Env == Tmp_Test, tmsgf("(unchanged? Env)"));
 
 @ Neither of the two environments should be changed at all. That
@@ -4544,6 +4488,146 @@ if (oki) {
 tap_again(oki, !fmore && undefined_p(feval)
         && fprobe == iprobe && env_empty_p(fenv),
         tmsgf("inner environment is unchanged"));
+
+@* Conditional Integration. Before testing conditional interaction
+with |environment|s it's reassuring to know that |if|'s syntax works
+the way that's expected of it, namely that when only the conequent
+is provided without an alternate it is as though the alternate was
+the value |VOID|, and that a call to it has no unexpected side-effects.
+
+@c
+void
+test_integrate_if (void)
+{
+        cell fcorrect, tcorrect, fwrong, twrong;
+        cell talt, tcons, tq;
+        cell marco, polo, t;
+        char *prefix = NULL;
+        char msg[TEST_BUFSIZE] = {0};
+        fcorrect = sym("correct-false");
+        fwrong   = sym("wrong-false");
+        tcorrect = sym("correct-true");
+        twrong   = sym("wrong-true");
+        talt     = sym("test-alternate");
+        tcons    = sym("test-consequent");
+        tq       = sym("test-query");
+        marco    = sym("marco?");
+        polo     = sym("polo!");
+        @<Sanity test |if|'s syntax@>@;
+        @<Test integrating |if|@>@;
+}
+
+@ Four tests make sure |if|'s arguments work as advertised. These
+are the only tests of the 2-argument form of |if|.
+
+{\tt (if \#t 'polo!)} $\Rightarrow$ {\tt polo!}:
+
+@<Sanity test |if|...@>=
+vm_clear();
+t = cons(synquote_new(polo), NIL);
+t = cons(TRUE, t);
+Acc = cons(sym("if"), t);
+prefix = "(if #t 'polo!)";
+interpret();
+tap_ok(symbol_p(Acc) && Acc == polo, tmsgf("symbol?"));
+test_vm_state_full(prefix);
+
+@ {\tt (if \#f 'marco?)} $\Rightarrow$ |VOID|:
+
+@<Sanity test |if|...@>=
+vm_clear();
+t = cons(synquote_new(marco), NIL);
+t = cons(FALSE, t);
+Acc = cons(sym("if"), t);
+prefix = "(if #f 'marco?)";
+interpret();
+tap_ok(void_p(Acc), tmsgf("void?"));
+test_vm_state_full(prefix);
+
+@ {\tt (if \#t 'marco? 'polo!)} $\Rightarrow$ {\tt marco?}:
+
+@<Sanity test |if|...@>=
+vm_clear();
+t = cons(synquote_new(polo), NIL);
+t = cons(synquote_new(marco), t);
+t = cons(TRUE, t);
+Acc = cons(sym("if"), t);
+prefix = "(if #t 'marco? 'polo!)";
+interpret();
+tap_ok(symbol_p(Acc) && Acc == marco, tmsgf("symbol?"));
+test_vm_state_full(prefix);
+
+@ {\tt (if \#f 'marco? 'polo!)} $\Rightarrow$ {\tt polo!}:
+
+@<Sanity test |if|...@>=
+vm_clear();
+t = cons(synquote_new(polo), NIL);
+t = cons(synquote_new(marco), t);
+t = cons(FALSE, t);
+Acc = cons(sym("if"), t);
+prefix = "(if #f 'marco? 'polo!)";
+interpret();
+tap_ok(symbol_p(Acc) && Acc == polo, tmsgf("symbol?"));
+test_vm_state_full(prefix);
+
+@ To confirm that |if|'s arguments are evaluated in the correct
+|environment| |Root| is replaced with a duplicate and invalid
+variants of the symbols inserted into it. This is then extended
+into a new |environment| with the desired version of the four symbols
+|if|, {\tt test-query}, {\tt test-consequent} and {\tt test-alternate}.
+
+@<Test integrating |if|@>=
+t = env_layer(Tmp_Test = Root);
+Root = env_empty();
+for (; !null_p(t); t = cdr(t))
+        if (caar(t) != sym("if"))
+                env_set(Root, caar(t), cadar(t), btrue);
+env_set(Root, sym("if"), env_search(Tmp_Test, sym("error")), btrue);
+env_set(Root, talt, fwrong, btrue);
+env_set(Root, tcons, twrong, btrue);
+env_set(Root, tq, VOID, btrue);
+Env = env_extend(Root);
+env_set(Env, sym("if"), env_search(Tmp_Test, sym("if")), btrue);
+env_set(Env, talt, fcorrect, btrue);
+env_set(Env, tcons, tcorrect, btrue);
+env_set(Env, tq, VOID, btrue);
+
+@ The test is performed with {\it test-query} resolving to {\tt \#f}
+\AM\ {\tt \#t}.
+
+@<Test integrating |if|@>=
+vm_clear();
+env_set(Env, tq, FALSE, bfalse);
+t = cons(talt, NIL);
+t = cons(tcons, t);
+t = cons(tq, t);
+Acc = cons(sym("if"), t);
+prefix = "(let ((query #f)) (if query consequent alternate))";
+t = Env;
+interpret();
+tap_ok(symbol_p(Acc) && Acc == fcorrect, tmsgf("symbol?"));
+test_vm_state_normal(prefix);
+tap_ok(Env == t, tmsgf("(unchanged? Env)"));
+
+@ @<Test integrating |if|@>=
+vm_clear();
+env_set(Env, tq, TRUE, bfalse);
+t = cons(talt, NIL);
+t = cons(tcons, t);
+t = cons(tq, t);
+Acc = cons(sym("if"), t);
+prefix = "(let ((query #t)) (if query consequent alternate))";
+t = Env;
+interpret();
+tap_ok(symbol_p(Acc) && Acc == tcorrect, tmsgf("symbol?"));
+test_vm_state_normal(prefix);
+tap_ok(Env == t, tmsgf("(unchanged? Env)"));
+
+@ It is important that the real |Root| is restored at the end of
+these tests in order to perform any more testing.
+
+@<Test integrating |if|@>=
+Root = Tmp_Test;
 
 @** TODO.
 
@@ -4654,5 +4738,10 @@ assoc_value (cell alist,
                 error(ERR_UNEXPECTED, r);
         return cadr(r);
 }
+
+@* Misc.
+
+@ @d synquote_new(o) atom(Sym_SYNTAX_QUOTE, (o), FORMAT_SYNTAX)
+@c /**/
 
 @** Index.

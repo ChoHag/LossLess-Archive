@@ -1,4 +1,7 @@
-LLTEST_SCRIPTS := pair.log eval.log
+LLTEST_SCRIPTS := \
+	eval.log  \
+	if.log    \
+	pair.log
 
 test: sanity.log $(LLTEST_SCRIPTS)
 	if sh -c "prove -V" >/dev/null 2>&1; then \
@@ -22,3 +25,7 @@ pair.log:
 # eval environments
 eval.log:
 	lltest e > eval.log
+
+# if
+if.log:
+	lltest i > if.log
