@@ -3882,6 +3882,7 @@ collector.
 
 @<Global var...@>=
 cell Tmp_Test = NIL;
+volatile boolean Testing_Exceptions = bfalse;
 
 @ @<Protected...@>=
 #ifdef LL_TEST
@@ -3904,6 +3905,8 @@ main (int    argc,
         else {
                 volatile boolean first = btrue;
                 @<Initialise error...@>@;
+                if (Testing_Exceptions)
+                        goto Test_Runtime_Exception; /* defined later */
                 if (!first)
                         return EXIT_FAILURE;
                 first = bfalse;
@@ -4156,6 +4159,9 @@ case 'o':
         break;
 case 'p':
         test_integrate_pair();@+
+        break;
+case 'x':
+        @<Test run-time exceptions@>
         break;
 default:
         error(ERR_UNEXPECTED, NIL);@+
@@ -4838,6 +4844,37 @@ tap_again(ok, environment_p(p), tmsgf("(environment? test-cte)"));
 tap_again(ok, p == m, tmsgf("(eq? test-cte (current-environment))"));
 test_vm_state_normal(prefix);
 tap_ok(Env == m, tmsgf("(unchanged? Env)"));
+
+@* Exceptions. When an error occurs at run-time it has the option
+(unimplemented) to be handled at run-time but if it isn't then
+control returns to before the beginning of the main loop. Each time
+around the main loop, |interpret| begins by calling |vm_clear| but
+that explicitely {\it doesn't} change the |environment| to allow
+for run-time mutation and expects that well-behaved code will clear
+the stack correctly.
+
+These exception tests enter a closure, which creates a stack frame,
+and call |error| within it. The tests then ensure that the |environment|
+and stack are ready to compute again.
+
+@d GOTO_FAIL "((lambda x (error fail)))"
+@<Test run-time ex...@>=
+Testing_Exceptions = btrue;
+vm_clear();
+Acc = read_cstring(GOTO_FAIL);
+printf("# This unhandled error is, in fact, handled:\n# ");
+interpret();
+printf("?\n");
+tap_fail("(error fail) causes an unhandled run-time exception");
+break;
+@#
+Test_Runtime_Exception:
+        test_vm_state(GOTO_FAIL,
+                TEST_VMSTATE_RUNNING
+                | TEST_VMSTATE_NOT_INTERRUPTED
+                | TEST_VMSTATE_ENV_ROOT
+                | TEST_VMSTATE_STACKS);
+        break;
 
 @** TODO.
 

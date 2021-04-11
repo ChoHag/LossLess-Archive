@@ -3,7 +3,8 @@ LLTEST_SCRIPTS :=       \
 	eval.log        \
 	if.log          \
 	operative.log   \
-	pair.log
+	pair.log        \
+	eXceptions.log
 
 test: sanity.log $(LLTEST_SCRIPTS)
 	if sh -c "prove -V" >/dev/null 2>&1; then \
@@ -39,3 +40,7 @@ operative.log:
 # cons car cdr null? pair? set-car! set-cdr!
 pair.log:
 	lltest p > pair.log
+
+# Exceptions
+eXceptions.log:
+	lltest x > eXceptions.log
