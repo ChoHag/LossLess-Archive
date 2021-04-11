@@ -56,7 +56,7 @@ into the accumulator, where the result will also be left.
 @<Global variables@>@/
 
 @ @<Global initialisation@>=
-/* There is no code here; this section exists to give it a name */
+/* This is located here to name it in full for \.{CWEB}'s benefit */
 
 @ \LL/ has few external dependencies, primarily |stdio| and
 |stdlib|, plus some obvious memory mangling functions from the
@@ -3901,7 +3901,7 @@ main (int    argc,
                 first = bfalse;
                 @<Select a testing entry-point@>
         }
-        return EXIT_SUCCESS;
+        return Test_Passing ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 #endif
 
@@ -3975,9 +3975,9 @@ This design is modelled on the \pdfURL{Test Anything
 Protocol}{http://testanything.org/} and the test scripts call an
 API that looks suspiciously like a tiny version of {\it Test::Simple}.
 
-|tap_plan| should be called exactly once per test script, either
-at the beginning if the total number of tests is known in advance
-or at the end with an argument of |0| otherwise.
+|tap_plan| is optionally called before the test script starts if
+the total number of tests is known in advance and then again at the
+end of testing with an argument of 0 to emit exactly one test plan.
 
 @d tap_fail(m) tap_ok(bfalse, (m))
 @d tap_pass(m) tap_ok(btrue, (m))
@@ -3990,6 +3990,7 @@ boolean tap_ok (boolean, char *);
 #endif
 
 @ @<Global var...@>=
+boolean Test_Passing = btrue;
 int Test_Plan = -1;
 int Next_Test = 1; /* not 0 */
 
@@ -4000,6 +4001,13 @@ tap_plan (int plan)
         if (plan == 0) {
                 if (Test_Plan < 0)
                         printf("1..%d\n", Next_Test - 1);
+                else if (Next_Test - 1 != Test_Plan) {
+                        printf("# Planned %3$d %1$s but ran %2$s%4$d!\n",
+                               (Test_Plan == 1 ? "test" : "tests"),
+                               (Next_Test <= Test_Plan ? "only " : ""),
+                               Test_Plan, Next_Test - 1);
+                        Test_Passing = bfalse;
+                }
                 return;
         }
         if (Test_Plan > 0)
@@ -4017,7 +4025,9 @@ tap_ok (boolean result,
 {
         printf("%s %d %s\n", (result ? "ok" : "not ok"),@| Next_Test++,@|
                (message && *message) ? message : "?");
-        return result ? btrue : bfalse;
+        if (result)
+                return btrue;
+        return Test_Passing = bfalse;
 }
 
 @ \LL/ is a programming language and so a lot of its tests involve
@@ -4033,10 +4043,10 @@ the function can be used in-line.
 @c
 @q CWEB doesn't like/understand variadic macros @>
 @q Also it puts the gap in the wrong place @>
-#define tmsgf(...)@,@,@,@,@,test_interpret_vmsgf(prefix, msg, __VA_ARGS__)
+#define tmsgf(...)@,@,@,@,@,test_interpret_vmsgf(msg, prefix, __VA_ARGS__)
 char *
-test_interpret_vmsgf (char *tsrc,
-                      char *tmsg,
+test_interpret_vmsgf (char *tmsg,
+                      char *tsrc,
                       char *fmt,
                       ...)
 {
@@ -4321,9 +4331,9 @@ interpret();
 ok = tap_ok(void_p(Acc), tmsgf("void?"));
 okok = ok = tap_ok(pair_p(Tmp_Test), tmsgf("(pair? T)"));
 tap_again(ok, symbol_p(car(Tmp_Test)) && car(Tmp_Test) == polo,
-          "(eq? (car T) 'polo!)");
+          tmsgf("(eq? (car T) 'polo!)"));
 tap_again(okok, symbol_p(cdr(Tmp_Test)) && cdr(Tmp_Test) == water,
-          "(eq? (cdr T) '|fish out of water!|)");
+          tmsgf("(eq? (cdr T) '|fish out of water!|)"));
 
 @ @<Test integrating set-cdr!@>=
 vm_clear();
@@ -4338,9 +4348,9 @@ interpret();
 ok = tap_ok(void_p(Acc), tmsgf("void?"));
 okok = ok = tap_ok(pair_p(Tmp_Test), tmsgf("(pair? T)"));
 tap_again(ok, symbol_p(car(Tmp_Test)) && car(Tmp_Test) == water,
-          "(eq? (car T) '|fish out of water!|)");
+          tmsgf("(eq? (car T) '|fish out of water!|)"));
 tap_again(okok, symbol_p(cdr(Tmp_Test)) && cdr(Tmp_Test) == polo,
-          "(eq? (cdr T) 'polo!)");
+          tmsgf("(eq? (cdr T) 'polo!)"));
 
 @*1 |eval|. Although useful to write, and they weeded out some dumb
 bugs, the real difficulty is in ensuring the correct |environment|
@@ -4465,29 +4475,30 @@ have the same symbols with the different values as above and also
 |eval|.
 
 @<Function dec...@>=
-void test_integrate_eval_unchanged (char *, cell, cell);
-
-@ @c
-#define found(var)        \
-if (undefined_p(var))     \
-        (var) = cadar(t); \
-else                      \
+#define TEST_EVAL_FOUND(var) \
+if (undefined_p(var))        \
+         (var) = cadar(t);   \
+else                         \
         fmore = btrue;
-#define FIND                                                  \
+#define TEST_EVAL_FIND@;                                      \
+feval = fprobe = fenv = fprog = UNDEFINED;                    \
+fmore = bfalse;                                               \
 while (!null_p(t)) {                                          \
         if (caar(t) == sym("alt-test!probe")) {@+             \
-                found(fprobe);@+                              \
+                TEST_EVAL_FOUND(fprobe);@+                    \
         } else if (caar(t) == sym("eval")) {@+                \
-                found(feval);@+                               \
+                TEST_EVAL_FOUND(feval);@+                     \
         } else if (caar(t) == sym("testing-environment")) {@+ \
-                found(fenv);@+                                \
+                TEST_EVAL_FOUND(fenv);@+                      \
         } else if (caar(t) == sym("testing-program")) {@+     \
-                found(fprog);@+                               \
+                TEST_EVAL_FOUND(fprog);@+                     \
         } else                                                \
                 fmore = btrue;                                \
         t = cdr(t);                                           \
 }
-@#@#
+void test_integrate_eval_unchanged (char *, cell, cell);
+
+@ @c
 void
 test_integrate_eval_unchanged (char *prefix,
                                cell  outer,
@@ -4502,25 +4513,19 @@ test_integrate_eval_unchanged (char *prefix,
         @<Test the outer environment when testing |eval|@>@;
         @<Test the inner environment when testing |eval|@>@;
 }
-#undef found
-#undef FIND
 
 @ @<Test the outer...@>=
 oko = tap_ok(environment_p(outer), tmsgf("(environment? outer)"));
 tap_ok(env_root_p(outer), tmsgf("(environment.is-root? outer)"));
-feval = fprobe = fenv = fprog = UNDEFINED;
-fmore = bfalse;
 if (oko) {
         oeval = env_search(Root, sym("eval"));
         oprobe = env_search(Root, sym("error"));
         t = env_layer(outer);
-        FIND@;
-        if (!undefined_p(fprog)) {
+        TEST_EVAL_FIND@;
+        if (!undefined_p(fprog))
+                oki = list_p(fprog, FALSE, &t) && int_value(t) == 2;
                 /* TODO: write for |match(fprog,
                         read_cstring("(alt-test!probe 'oops)"))| */
-                oko = list_p(fprog, FALSE, &t);
-                oko = oko && int_value(t) == 2;
-        }
 }
 tap_again(oko, !fmore && feval == oeval
                 && fprobe == oprobe && fenv == inner,
@@ -4529,18 +4534,12 @@ tap_again(oko, !fmore && feval == oeval
 @ @<Test the inner...@>=
 oki = tap_ok(environment_p(inner), tmsgf("(environment? inner)"));
 tap_ok(env_root_p(inner), tmsgf("(environment.is-root? inner)"));
-feval = fprobe = fenv = fprog = UNDEFINED;
-fmore = bfalse;
 if (oki) {
         iprobe = env_search(Root, sym("test!probe"));
         t = env_layer(inner);
-        FIND@;
-        if (!undefined_p(fprog)) {
-                /* TODO: write for |match(fprog,
-                        read_cstring("(error wrong-program)"))| */
-                oki = list_p(fprog, FALSE, &t);
-                oki = oki && int_value(t) == 2;
-        }
+        TEST_EVAL_FIND@;
+        if (!undefined_p(fprog))
+                oki = list_p(fprog, FALSE, &t) && int_value(t) == 2;
 }
 tap_again(oki, !fmore && undefined_p(feval)
         && fprobe == iprobe && env_empty_p(fenv),
