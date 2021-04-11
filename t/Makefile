@@ -1,6 +1,7 @@
-LLTEST_SCRIPTS := \
-	eval.log  \
-	if.log    \
+LLTEST_SCRIPTS :=       \
+	applicative.log \
+	eval.log        \
+	if.log          \
 	pair.log
 
 test: sanity.log $(LLTEST_SCRIPTS)
@@ -17,6 +18,10 @@ sanity.log: ../lltest
 	lltest 0 > sanity.log
 
 $(LLTEST_SCRIPTS): sanity.log ../lltest
+
+# eval environments
+applicative.log:
+	lltest a > applicative.log
 
 # eval environments
 eval.log:

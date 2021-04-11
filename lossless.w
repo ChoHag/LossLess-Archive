@@ -3870,6 +3870,7 @@ int test_main (int, char **);
 void test_compile (void);
 void test_integrate_eval (void);
 void test_integrate_if (void);
+void test_integrate_lambda (void);
 void test_integrate_pair (void);
 void test_vm_state (char *, int);
 char *test_vmsgf (char *, char *, char *, ...);
@@ -4140,6 +4141,9 @@ switch(argv[1][0]) {
 case '0':
         test_compile();@+
         break; /* zero */
+case 'a':
+        test_integrate_lambda();@+
+        break;
 case 'e':
         test_integrate_eval();@+
         break;
@@ -4648,6 +4652,91 @@ these tests in order to perform any more testing.
 
 @<Test integrating |if|@>=
 Root = Tmp_Test;
+
+@* Applicatives. |lambda| is used in two separate phases, one to
+create an applicative and the other to enter it. Most syntactic and
+usage tests can happen when higher-level testing facilities are
+available, here we test only that applicatives handle VM state
+correctly.
+
+@<Function dec...@>=
+cell test_build_lambda (cell, cell, boolean);
+
+@ @c
+void
+test_integrate_lambda (void)
+{
+        boolean ok;
+        cell t, m, p;
+        char *prefix;
+        char msg[TEST_BUFSIZE] = {0};
+        @<Test building a |lambda|@>@;
+        @<Test entering a |lambda|@>@;
+}
+
+@ @c
+cell
+test_build_lambda (cell formals,
+                   cell body,
+                   boolean compile_p)
+{
+        cell r;
+        vms_push(cons(formals, body));
+        vms_push(Acc);
+        Acc = cons(body, NIL);
+        Acc = cons(formals, Acc);
+        Acc = cons(sym("lambda"), Acc);
+        if (compile_p) {
+                vm_clear();
+                interpret();
+        }
+        r = Acc;
+        Acc = vms_pop();
+        vms_pop();
+        return r;
+}
+
+@ An applicative closes over the |environment| that was active at the
+point |lambda| was encountered.
+
+@<Test building a |lambda|@>=
+vm_clear();
+Tmp_Test = Env = env_extend(Root);
+Acc = test_build_lambda(sym("x"), NIL, bfalse);
+prefix = "(lambda x)";
+interpret();
+ok = tap_ok(applicative_p(Acc), tmsgf("applicative?"));
+tap_again(ok, symbol_p(applicative_formals(Acc)), tmsgf("formals"));
+@#
+if (ok) t = applicative_closure(Acc);
+tap_again(ok, environment_p(car(t)), tmsgf("environment?"));
+tap_again(ok, car(t) == Tmp_Test, tmsgf("closure"));
+@#
+if (ok) t = cdr(t);
+tap_again(ok, car(t) != Prog, tmsgf("prog")); /* \AM\ what? */
+test_vm_state_normal(prefix);
+tap_ok(Env == Tmp_Test, tmsgf("(unchanged? Env)"));
+
+@ To enter an applicative closure its |environment| and running
+program are restored atop a new stack frame which is removed upon
+leaving.
+
+@<Test entering a |lambda|@>=
+Env = env_extend(Root);
+env_set(Env, sym("anything"), sym("anything-else"), btrue);
+t = sym("x");
+Tmp_Test = test_build_lambda(t, cons(sym("test!probe"), NIL), btrue);
+Tmp_Test = cons(Env, Tmp_Test);
+m = Env = env_extend(Root);
+Acc = cons(cdr(Tmp_Test), NIL);
+prefix = "((lambda x (test!probe)))";
+vm_clear();
+interpret();
+t = assoc_value(Acc, sym("Env"));
+tap_ok(environment_p(t), tmsgf("(environment? (assoc-value T 'Env))"));
+tap_ok(env_parent(t) == car(Tmp_Test), tmsgf("(eq? (assoc-value T 'Env) (env.parent E))"));
+test_vm_state_normal(prefix);
+tap_ok(Env == m, tmsgf("(unchanged? Env)"));
 
 @** TODO.
 
