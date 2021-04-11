@@ -36,11 +36,11 @@ similar to scheme. This document describes the implementation of a
 elsewhere. In unambiguous cases \LL/ may be used to refer specifically
 to the implementation.
 
-% TODO: URLs
-This code started off its life as \.{s9fes} by Nils M. Holm
-(\.{http://t3x.org/s9fes/index.html}). After a few iterations including
-being briefly ported to perl this rather different code is the result,
-although at its core it follows the same design.
+This code started off its life as \pdfURL{\.{s9fes} by Nils M.
+Holm}{http://t3x.org/s9fes/}\footnote{$^1$}{\.{http://t3x.org/s9fes/}}.
+After a few iterations including being briefly ported to perl this
+rather different code is the result, although at its core it follows
+the same design.
 
 The structure is of a virtual machine with a single accumulator
 register and a stack. There is a single entry point to the
@@ -774,7 +774,6 @@ int  RTSp = -1;
 @ @<Function dec...@>=
 cell vms_pop (void);
 void vms_push (cell);
-
 
 @ The VM and compiler stacks |VMS| and |CTS| are built on |list|s.
 
@@ -3872,6 +3871,8 @@ void test_compile (void);
 void test_integrate_eval (void);
 void test_integrate_if (void);
 void test_integrate_pair (void);
+void test_vm_state (char *, int);
+char *test_vmsgf (char *, char *, char *, ...);
 #endif
 
 @ Tests need to be able to save data from the maw of the garbage
@@ -3963,10 +3964,10 @@ testing_build_probe (cell was_Acc)
 }
 #undef probe_push
 
-@* Internal Test ``Suite''. The Perl ecosystem has a well-deserved
-reputation for its thorough testing regime and the quality (if not
-necessarily the quality) of the results so \LL/ is deliberately
-aping the interfaces that were developed there.
+@ The Perl ecosystem has a well-deserved reputation for its thorough
+testing regime and the quality (if not necessarily the quality) of
+the results so \LL/ is deliberately aping the interfaces that were
+developed there.
 
 The \LL/ internal tests are a collection of test ``script''s each
 of which massages some \LL/ function or other and then reports what
@@ -3974,7 +3975,9 @@ happened in a series of binary pass/fail ``test''s. A test in this
 sense isn't the performance of any activity but comparing the result
 of having {\it already performed} some activity with the expected
 outcome. Any one action normally requires a lot of individual tests
-to confirm the validity of its result.
+to confirm the validity of its result. Occasionally ``test'' refers
+to a collection of these tests which are performed together, which
+is a bad habit.
 
 This design is modelled on the \pdfURL{Test Anything
 Protocol}{http://testanything.org/} and the test scripts call an
@@ -4036,24 +4039,25 @@ tap_ok (boolean result,
 }
 
 @ \LL/ is a programming language and so a lot of its tests involve
-code. |test_interpret_vmsgf| formats these test messages in a
-consistent way. The caller is expected to maintain its own buffer
-of |TEST_BUFSIZE| bytes a pointer to which goes in and out so that
-the function can be used in-line.
+code. |test_vmsgf| formats messages describing tests which involve
+code (or any other s-expression) in a consistent way. The caller
+is expected to maintain its own buffer of |TEST_BUFSIZE| bytes a
+pointer to which goes in and out so that the function can be used
+in-line.
 
 |tmsgf| hardcodes the names of the variables a function passes into
-|test_interpret_vmsgf| for brevity.
+|test_vmsgf| for brevity.
 
 @d TEST_BUFSIZE 1024
 @c
 @q CWEB doesn't like/understand variadic macros @>
 @q Also it puts the gap in the wrong place @>
-#define tmsgf(...)@,@,@,@,@,test_interpret_vmsgf(msg, prefix, __VA_ARGS__)
+#define tmsgf(...)@,@,@,@,@,test_vmsgf(msg, prefix, __VA_ARGS__)
 char *
-test_interpret_vmsgf (char *tmsg,
-                      char *tsrc,
-                      char *fmt,
-                      ...)
+test_vmsgf (char *tmsg,
+            char *tsrc,
+            char *fmt,
+            ...)
 {
         char ttmp[TEST_BUFSIZE] = {0};
         int ret;
@@ -4065,8 +4069,65 @@ test_interpret_vmsgf (char *tmsg,
         return tmsg;
 }
 
+@ The majority of tests validate some parts of the VM state, which
+parts is controlled by the |flags| parameter.
+
+@q Attempting to make _STACKS multi-line confuses CWEB greatly @>
+@d TEST_VMSTATE_RUNNING         0x01
+@d TEST_VMSTATE_NOT_RUNNING     0x00
+@d TEST_VMSTATE_INTERRUPTED     0x02
+@d TEST_VMSTATE_NOT_INTERRUPTED 0x00
+@d TEST_VMSTATE_VMS             0x04
+@d TEST_VMSTATE_CTS             0x08
+@d TEST_VMSTATE_RTS             0x10
+@d TEST_VMSTATE_STACKS          (TEST_VMSTATE_VMS | TEST_VMSTATE_CTS | TEST_VMSTATE_RTS)
+@d TEST_VMSTATE_ENV_ROOT        0x20
+@d TEST_VMSTATE_PROG_MAIN       0x40
+@#
+@d test_vm_state_full(p) test_vm_state((p),
+          TEST_VMSTATE_NOT_RUNNING
+        | TEST_VMSTATE_NOT_INTERRUPTED
+        | TEST_VMSTATE_ENV_ROOT
+        | TEST_VMSTATE_PROG_MAIN
+        | TEST_VMSTATE_STACKS)
+@d test_vm_state_normal(p) test_vm_state((p),
+          TEST_VMSTATE_NOT_RUNNING
+        | TEST_VMSTATE_NOT_INTERRUPTED
+        | TEST_VMSTATE_PROG_MAIN
+        | TEST_VMSTATE_STACKS) /* |!TEST_VMSTATE_ENV_ROOT| */
+@c
+void
+test_vm_state (char *prefix,
+               int   flags)
+{
+        char msg[TEST_BUFSIZE] = {0};
+        if (flags & TEST_VMSTATE_RUNNING)
+                tap_ok(Running, tmsgf("(== Running 1)"));
+        else
+                tap_ok(!Running, tmsgf("(== Running 0)"));
+        if (flags & TEST_VMSTATE_INTERRUPTED)
+                tap_ok(Interrupt, tmsgf("(== Interrupt 1)"));
+        else
+                tap_ok(!Interrupt, tmsgf("(== Interrupt 0)"));
+        if (flags & TEST_VMSTATE_VMS)
+                tap_ok(null_p(VMS), tmsgf("(null? VMS)"));
+        if (flags & TEST_VMSTATE_CTS)
+                tap_ok(null_p(CTS), tmsgf("(null? CTS)"));
+        if (flags & TEST_VMSTATE_RTS)
+                tap_ok(RTSp == -1, tmsgf("(== RTSp -1)"));
+        if (flags & TEST_VMSTATE_ENV_ROOT)
+                tap_ok(Env == Root, tmsgf("(== Env Root)"));
+        if (flags & TEST_VMSTATE_PROG_MAIN) {
+                tap_ok(Prog == Prog_Main,
+                       tmsgf("Prog_Main is returned to"));
+                tap_ok(Ip == vector_length(Prog_Main) - 1,
+                       tmsgf("Prog_Main is completed"));
+        }
+        @/@, /* TODO? Others: root unchanged; */
+}
+
 @ Each \LL/ internal test script is a function named ``{\it
-|test_|...}''.  Other prefixes are used for supporting functions.
+|test_|...}''.  Other prefixes are also used for supporting functions.
 Arguments to the testing binary determine which test script to run
 or enter a standard REPL in the testing |environment| if there are
 none.
@@ -4111,63 +4172,18 @@ test_compile (void)
 @* Unit Tests. Skipping over a bunch of boring but important unit
 tests for the data storage, the garbage collector, \AM c. ...
 
-@* Interpreter Tests. We arrive at the critical integration between
+@* Pair Integration. We arrive at the critical integration between
 the compiler and the interpreter.
 
 Calling the following tests integration tests may be thought of as
 a bit of a misnomer; if so consider them unit tests of the integration
 tests which are to follow in pure \LL/ code.
 
-A lot of these tests validate some parts of the VM state, controlled
-by the |flags| parameter.
-
-@q Attempting to make _STACKS multi-line confuses CWEB greatly @>
-@d TEST_VMSTATE_RUNNING         0x01
-@d TEST_VMSTATE_NOT_RUNNING     0x00
-@d TEST_VMSTATE_INTERRUPTED     0x02
-@d TEST_VMSTATE_NOT_INTERRUPTED 0x00
-@d TEST_VMSTATE_VMS             0x04
-@d TEST_VMSTATE_CTS             0x08
-@d TEST_VMSTATE_RTS             0x10
-@d TEST_VMSTATE_STACKS          (TEST_VMSTATE_VMS | TEST_VMSTATE_CTS | TEST_VMSTATE_RTS)
-@d TEST_VMSTATE_ENV_ROOT        0x20
-@d TEST_VMSTATE_PROG_MAIN       0x40
-@c
-void
-test_vm_state (char *prefix,
-               int   flags)
-{
-        char msg[TEST_BUFSIZE] = {0};
-        if (flags & TEST_VMSTATE_RUNNING)
-                tap_ok(Running, tmsgf("(== Running 1)"));
-        else
-                tap_ok(!Running, tmsgf("(== Running 0)"));
-        if (flags & TEST_VMSTATE_INTERRUPTED)
-                tap_ok(Interrupt, tmsgf("(== Interrupt 1)"));
-        else
-                tap_ok(!Interrupt, tmsgf("(== Interrupt 0)"));
-        if (flags & TEST_VMSTATE_VMS)
-                tap_ok(null_p(VMS), tmsgf("(null? VMS)"));
-        if (flags & TEST_VMSTATE_CTS)
-                tap_ok(null_p(CTS), tmsgf("(null? CTS)"));
-        if (flags & TEST_VMSTATE_RTS)
-                tap_ok(RTSp == -1, tmsgf("(== RTSp -1)"));
-        if (flags & TEST_VMSTATE_ENV_ROOT)
-                tap_ok(Env == Root, tmsgf("(== Env Root)"));
-        if (flags & TEST_VMSTATE_PROG_MAIN) {
-                tap_ok(Prog == Prog_Main,
-                       tmsgf("Prog_Main is returned to"));
-                tap_ok(Ip == vector_length(Prog_Main) - 1,
-                       tmsgf("Prog_Main is completed"));
-        }
-        @/@, /* TODO? Others: root unchanged; */
-}
-
-@*1 Pairs. First a set of assertions that the simpler opcodes work
-as advertised. These are |cons|, |car|, |cdr|, {\it null?}, {\it
+Starting with |pair|s tests that |cons|, |car|, |cdr|, {\it null?},
 @q This || vs. {} is getting annoying @>
-pair?}, {\it set-car!} \AM\ {\it set-cdr!}. This code is extremely
-boring and repetetive.
+{\it pair?}, {\it set-car!} \AM\ {\it set-cdr!} return their result
+and don't do anything strange. This code is extremely boring and
+repetetive.
 
 @c
 void
@@ -4314,9 +4330,9 @@ tap_again(ok, symbol_p(car(Tmp_Test)) && car(Tmp_Test) == water,
 tap_again(okok, symbol_p(cdr(Tmp_Test)) && cdr(Tmp_Test) == polo,
           tmsgf("(eq? (cdr T) 'polo!)"));
 
-@*1 |eval|. Although useful to write, and they weeded out some dumb
-bugs, the real difficulty is in ensuring the correct |environment|
-is in place at the right time.
+@* Integrating |eval|. Although useful to write, and they weeded
+out some dumb bugs, the real difficulty is in ensuring the correct
+|environment| is in place at the right time.
 
 We'll skip |error| for now and start with |eval|. Again this test
 isn't thorough but I think it's good enough for now. The important
