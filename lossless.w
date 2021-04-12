@@ -1256,6 +1256,18 @@ env_search (cell haystack,
         return UNDEFINED;
 }
 
+@ @c
+cell
+env_here (cell haystack,
+          cell needle)
+{
+        cell n;
+        for (n = env_layer(haystack); !null_p(n); n = cdr(n))
+                if (caar(n) == needle)
+                        return cadar(n);
+        return UNDEFINED;
+}
+
 @ To set a variable's value the |environment|'s top layer is first
 searched to see if the |symbol| is already bound. An |error| is
 raised if the symbol is bound (when running on behalf of {\it
@@ -3923,6 +3935,7 @@ state which they do by calling {\it test!probe}.
 
 @<Function dec...@>=
 void compile_testing_probe (cell, cell, boolean);
+void compile_testing_probe_app (cell, cell, boolean);
 cell testing_build_probe (cell);
 
 @ @<Testing opcodes@>=
@@ -3935,7 +3948,8 @@ case OP_TEST_PROBE:@/
         break;
 
 @ @<Testing primitives@>=
-{ "test!probe", compile_testing_probe },
+{ "test!probe", compile_testing_probe },@/
+{ "test!probe-applying", compile_testing_probe_app },
 
 @ @c
 void
@@ -3945,6 +3959,25 @@ compile_testing_probe (cell op __unused,
 {
         emitop(OP_PUSH);
         emitq(args);
+        emitop(OP_TEST_PROBE);
+}
+
+@ This variant evaluates its run-time arguments first.
+@c
+void
+compile_testing_probe_app (cell op __unused,
+                           cell args,
+                           boolean tail_p __unused)
+{
+        emitop(OP_PUSH);
+        cts_push(args = list_reverse(args, NULL, NULL));
+        emitq(NIL);
+        for (; pair_p(args); args = cdr(args)) {
+                emitop(OP_PUSH);
+                compile_expression(car(args), bfalse);
+                emitop(OP_CONS);
+        }
+        cts_pop();
         emitop(OP_TEST_PROBE);
 }
 
@@ -4678,10 +4711,21 @@ cell test_build_lambda (cell, cell, boolean);
 void
 test_integrate_lambda (void)
 {
-        boolean ok;
-        cell t, m;
+        boolean ok, ok0, ok1;
+        cell ie, oe, len;
+        cell t, m, p, d0, d1, p0, p1;
+        cell sn, si, sin, sinn, so, sout, soutn;
         char *prefix;
         char msg[TEST_BUFSIZE] = {0};
+        /* Although myriad these variables' scope does not reach across
+           the individual sections below */
+        sn    = sym("n");
+        si    = sym("inner");
+        sin   = sym("in");
+        sinn  = sym("in-n");
+        so    = sym("outer");
+        sout  = sym("out");
+        soutn = sym("out-n");
         @<Test building a |lambda|@>@;
         @<Test entering a |lambda|@>@;
 }
@@ -4747,6 +4791,175 @@ interpret();
 t = assoc_value(Acc, sym("Env"));
 tap_ok(environment_p(t), tmsgf("(environment? (assoc-value T 'Env))"));
 tap_ok(env_parent(t) == car(Tmp_Test), tmsgf("(eq? (assoc-value T 'Env) (env.parent E))"));
+test_vm_state_normal(prefix);
+tap_ok(Env == m, tmsgf("(unchanged? Env)"));
+
+@ Given that we can compile an enter a |lambda| closure, this test
+assures that we can enter a lambda closure that's compiled and then
+passed as an argument to a lambda closure. The expression being
+evaluated is \.{((lambda$_0$ (L$_1$ . x0) (L$_1$ (test!probe$_0$)))
+(lambda$_1$ (T$_0$ . x1) (test!probe$_1$)))}
+
+The lambda$_0$ (the caller) expression is first evaluated to compile
+an applicative closure then this is repeated for lambda$_1$ (the
+callee). The closure created by lambda$_0$ is then entered with the
+lambda$_1$ applicative as an argument.
+
+The lambda$_0$ applicative then evaluates \.{test!probe}$_0$ and calls
+into the lambda$_1$ applicative that was given as an argument, passing the
+\.{test!probe}$_0$ result.
+
+The lambda$_1$ closure is then entered which evaluates and returns
+\.{test!probe}$_1$.
+
+\point 1. |Acc| is the result of \.{test!probe}$_1$ \.{P}$_1$.
+
+\point 2. |assoc_value|(\.{P}$_1$, '|Env|) is the dynamic environment
+\.{D}$_1$ in lambda$_1$.
+
+\point 3. |env_search|(\.{D}$_1$, '\.{T}$_0$) is the result of
+\.{test!probe}$_0$ \.{P}$_0$.
+
+\point 4. |assoc_value|(\.{P}$_0$, '|Env|) is the dynamic environment
+\.{D}$_0$ in lambda$_0$.
+
+\point 5. Each \.{D} should be unique but extend the same parent,
+which is |Env|.
+
+@d TEST_LAMBDA_IN_PROG "(lambda (L . x0) (L (test!probe)))"
+@<Test entering a |lambda|@>=
+m = Env = env_extend(Root);
+vm_clear();
+Acc = read_cstring("(" TEST_LAMBDA_IN_PROG " (lambda (T . x1) (test!probe)))");
+prefix = "((LAMBDA) (lambda (T . x1) (test!probe)))";
+interpret();
+p1 = Acc;
+d1 = assoc_value(p1, sym("Env"));
+p0 = env_search(d1, sym("T"));
+d0 = assoc_value(p0, sym("Env"));
+ok0 = tap_ok(environment_p(d0), tmsgf("(environment? caller)"));
+ok1 = tap_ok(environment_p(d1), tmsgf("(environment? callee)"));
+tap_ok(d0 != d1, tmsgf("(¬eq? caller callee)"));
+tap_again(ok0, env_parent(d0) == Env, tmsgf("(parent? caller)"));
+tap_again(ok1, env_parent(d1) == Env, tmsgf("(parent? callee)"));
+test_vm_state_normal(prefix);
+tap_ok(Env == m, tmsgf("(unchanged? Env)"));
+
+@ The code to test calling a vov from a within a lambda is largely
+the same with an operative created by |vov| replacing the lambda$_1$
+callee:
+
+\.{(vov ((A vov/args) (T vov/env)) (test!probe-applying$_1$ (eval (car A)
+E) A E)))}.
+
+The result is different because the caller does not evaluate the
+arguments that are passed to the operative.
+
+\point 1 \AM\ 2. |Acc| is still the result of \.{test!probe}$_1$
+and '|Env| within it the dynamic environment \.{D}$_1$ in, this
+time, the vov.
+
+\point 3. \.{P}$_0$ is now the first argument to
+\.{test!probe-applying}$_1$.
+
+\point 4. \.{D}$_0$ must be the same as |E| the third---|caddr|---argument
+to \.{test!probe-applying}$_1$.
+
+\point 5. The environment ancestry is the same.
+
+@d TEST_LAMBDA_INOP_FORMALS "((A vov/args) (E vov/env))"
+@d TEST_LAMBDA_INOP_APP "(test!probe-applying (eval (car A) E) A E)"
+@<Test entering a |lambda|@>=
+m = Env = env_extend(Root);
+vm_clear();
+Acc = read_cstring("(" TEST_LAMBDA_IN_PROG@|
+        " (vov " TEST_LAMBDA_INOP_FORMALS@| " " TEST_LAMBDA_INOP_APP "))");
+prefix = "((LAMBDA) (vov ... " TEST_LAMBDA_INOP_APP ")";
+interpret();
+p1 = Acc;
+d1 = assoc_value(p1, sym("Env"));
+p = assoc_value(p1, sym("Args"));
+p0 = car(p);
+d0 = assoc_value(p0, sym("Env"));
+ok0 = tap_ok(environment_p(d0), tmsgf("(environment? caller)"));
+ok1 = tap_ok(environment_p(d1), tmsgf("(environment? callee)"));
+tap_ok(d0 != d1, tmsgf("(¬eq? caller callee)"));
+tap_ok(d0 == caddr(p), tmsgf("(eq? caller E)"));
+tap_again(ok0, env_parent(d0) == Env, tmsgf("(parent? caller)"));
+tap_again(ok1, env_parent(d1) == Env, tmsgf("(parent? callee)"));
+test_vm_state_normal(prefix);
+tap_ok(Env == m, tmsgf("(unchanged? Env)"));
+
+@ Similar to applicatives which call into another closure are
+applicatives which return one. Starting with an inner-applicative
+using \.{(lambda (outer n) (lambda (inner n) (test!probe)))}.
+
+This is a function which takes two arguments, |outer| and |n| and
+creates another function which closes over them and takes two
+of its own arguments, |inner| and |n|.
+
+The test calls this by evaluating \.{((X 'out 'out-n) 'in 'in-n)}
+with the above code inserted in the \.{X} position.
+
+When the inner lambda is evaluating {\it test!probe} its local
+environment should be an extension of the dynamic environment that
+was created when entering the outer lambda. That environment should
+itself be an extension of the local environment which is in |Env|.
+
+@d TEST_LAMBDA_RTN_APP "(lambda (outer n) (lambda (inner n) (test!probe)))"
+@<Test entering a |lambda|@>=
+m = Env = env_extend(Root);
+vm_clear();
+Acc = read_cstring("((" TEST_LAMBDA_RTN_APP " 'out 'out-n) 'in 'in-n)");
+prefix = TEST_LAMBDA_RTN_APP;
+interpret();
+ie = assoc_value(Acc, sym("Env"));
+ok = tap_ok(environment_p(ie), tmsgf("(environment? inner)"));
+tap_again(ok, env_search(ie, sn) == sinn, tmsgf("(eq? n 'in-n)"));
+tap_again(ok, env_search(ie, si) == sin, tmsgf("(eq? inner 'in)"));
+tap_again(ok, env_search(ie, so) == sout, tmsgf("(eq? outer 'out)"));
+if (ok) oe = env_parent(ie);
+tap_again(ok, environment_p(oe), tmsgf("(environment? outer)"));
+tap_again(ok, env_search(oe, sn) == soutn, tmsgf("(eq? n 'out-n)"));
+tap_again(ok, undefined_p(env_search(oe, si)), tmsgf("(¬defined? inner)"));
+tap_again(ok, env_search(oe, so) == sout, tmsgf("(eq? outer 'out)"));
+tap_again(ok, env_parent(oe) == Env, tmsgf("(parent? outer)"));
+test_vm_state_normal(prefix);
+tap_ok(Env == m, tmsgf("(unchanged? Env)"));
+
+@ Again, a vov-returning lambda looks similar to returning a lambda:
+
+\.{(vov ((A vov/args) (E vov/env)) (test!probe-applying A E))}
+
+@d TEST_LAMBDA_RTN_BODY "(vov " TEST_LAMBDA_INOP_FORMALS
+        " (test!probe-applying A E))"
+@d TEST_LAMBDA_RTN_OP "(lambda (outer n) " TEST_LAMBDA_RTN_BODY ")"
+@<Test entering a |lambda|@>=
+m = Env = env_extend(Root);
+vm_clear();
+Acc = read_cstring("((" TEST_LAMBDA_RTN_OP " 'out 'out-n) 'in 'in-n)");
+prefix = "(vov ... (test!probe-applying A E))";
+interpret();
+
+ie = assoc_value(Acc, sym("Env"));
+ok = tap_ok(environment_p(ie), tmsgf("(environment? inner)"));
+tap_again(ok, undefined_p(env_here(ie, sn)), tmsgf("(¬lifted? n)"));
+tap_again(ok, undefined_p(env_here(ie, so)), tmsgf("(¬lifted? outer)"));
+tap_again(ok, env_search(ie, sn) == soutn, tmsgf("(eq? n 'out-n)"));
+tap_again(ok, env_search(ie, so) == sout, tmsgf("(eq? outer 'out)"));
+if (ok) oe = env_parent(ie);
+tap_again(ok, environment_p(oe), tmsgf("(environment? outer)"));
+tap_again(ok, env_search(ie, sn) == soutn, tmsgf("(eq? n 'out-n)"));
+tap_again(ok, env_search(ie, so) == sout, tmsgf("(eq? outer 'out)"));
+tap_again(ok, undefined_p(env_search(oe, sym("A"))), tmsgf("(¬defined? A)"));
+tap_again(ok, undefined_p(env_search(oe, sym("E"))), tmsgf("(¬defined? E)"));
+tap_again(ok, env_parent(oe) == Env, tmsgf("(parent? outer)"));
+if (ok) t = env_search(ie, sym("A"));
+tap_again(ok, true_p(list_p(t, FALSE, &len)), tmsgf("(list? A)"));
+tap_again(ok, int_value(len) == 2, tmsgf("length"));
+tap_again(ok, syntax_p(car(t)) && cdar(t) == sin
+          && syntax_p(cadr(t)) && cdadr(t) == sinn, tmsgf("unevaluated"));
+tap_again(ok, env_search(ie, sym("E")) == Env, tmsgf("(eq? E Env)"));
 test_vm_state_normal(prefix);
 tap_ok(Env == m, tmsgf("(unchanged? Env)"));
 
