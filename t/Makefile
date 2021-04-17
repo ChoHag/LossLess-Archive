@@ -3,6 +3,7 @@ LLTEST_SCRIPTS :=       \
 	eval.log        \
 	if.log          \
 	operative.log   \
+	unit-stack.log  \
 	pair.log        \
 	eXceptions.log
 
@@ -36,6 +37,10 @@ if.log:
 # operative closures
 operative.log:
 	lltest o > operative.log
+
+# unit tests for the stacks
+unit-stack.log:
+	lltest u s > unit-stack.log
 
 # cons car cdr null? pair? set-car! set-cdr!
 pair.log:

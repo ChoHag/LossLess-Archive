@@ -3890,6 +3890,7 @@ void test_integrate_if (void);
 void test_integrate_lambda (void);
 void test_integrate_pair (void);
 void test_integrate_vov (void);
+void test_unit_stacks (void);
 void test_vm_state (char *, int);
 char *test_vmsgf (char *, char *, char *, ...);
 #endif
@@ -3913,7 +3914,7 @@ main (int    argc,
       char **argv)
 {
         @<Initialise Virt...@>@;
-        if (argc > 2)
+        if (argc > 3)
                 error(ERR_ARITY_EXTRA, NIL);
         else if (argc == 1)
                 return test_main(0, NULL);
@@ -4195,11 +4196,14 @@ case 'i':
 case 'o':
         test_integrate_vov();@+
         break;
+case 'u':
+        @<Select a unit test@>@;@+
+        break;
 case 'p':
         test_integrate_pair();@+
         break;
 case 'x':
-        @<Test run-time exceptions@>
+        @<Test run-time exceptions@>@;@+
         break;
 default:
         error(ERR_UNEXPECTED, NIL);@+
@@ -4221,11 +4225,51 @@ test_compile (void)
         tap_pass("LossLess compiles and runs");
 }
 
-@* Unit Tests. Skipping over a bunch of boring but important unit
-tests for the data storage, the garbage collector, \AM c. ...
+@* Unit Tests. This is the very boring process of laboriously
+checking that each function or otherwise segregable unit of code
+does what it says on the tin. The trick in this section is to, for
+each unit, identify what it might consider pathological (but not
+impossible) input[s] and verify that it responds correctly, whether
+by return value, state change or error.
 
-@* Pair Integration. We arrive at the critical integration between
-the compiler and the interpreter.
+@<Select a unit...@>=
+if (argc != 3)
+        error(ERR_ARITY_MISSING, NIL);
+if (argv[2][1] != '\0')
+        error(ERR_ARITY_SYNTAX, NIL);
+switch(argv[2][0]) {
+case 's':
+        test_unit_stacks();@+
+        break;
+default:
+        error(ERR_UNEXPECTED, NIL);@+
+        break;
+}
+
+@ Skipping the basic memory management and garbage collector for
+the time being we come to object storage, starting with the stacks.
+
+@c
+void
+test_unit_stacks (void)
+{
+        @<Unit-test the VM \AM\ compiler stacks@>@;
+        @<Unit-test the run-time stack@>@;
+}
+
+@ Blurb.
+@<Unit-test the VM...@>=
+/*TODO: |vms_clear|, |vms_pop|, |vms_push|, |vms_ref|, |vms_set|,
+  |cts_reset| */
+
+@ Blurb.
+@<Unit-test the run...@>=
+/*TODO: |rts_clear|, |rts_pop|, |rts_prepare|, |rts_push|, |rts_ref|,
+  |rts_ref_abs|, |rts_reset|, |rts_set|, |rts_set_abs| */
+
+@* Pair Integration. With the basic building blocks' interactions
+tested we arrive at the critical integration between the compiler
+and the interpreter.
 
 Calling the following tests integration tests may be thought of as
 a bit of a misnomer; if so consider them unit tests of the integration
