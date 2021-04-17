@@ -3877,6 +3877,9 @@ Other testing functions unused by the \LL/ runtime are expected to
 be removed by the \CEE/-compiler or linker rather than obscuring
 this source code by drowning it in preprocessor directives.
 
+@d test_copy_env() Env
+@d test_compare_env(o) ((o) == Env)
+@d test_is_env(o,e) ((o) == (e))
 @<Function dec...@>=
 #ifdef LL_TEST
 int test_main (int, char **);
@@ -4698,24 +4701,27 @@ these tests in order to perform any more testing.
 @<Test integrating |if|@>=
 Root = Tmp_Test;
 
-@* Applicatives. |lambda| is used in two separate phases, one to
-create an applicative and the other to enter it. Most syntactic and
-usage tests can happen when higher-level testing facilities are
-available, here we test only that applicatives handle VM state
-correctly.
+@* Applicatives. Testing |lambda| here is mostly concerned with
+verifying that the correct environment is stored in the closure it
+creates and then extended when it is entered.
+
+These tests (and |vov|, below) could be performed using higher-level
+testing and {\it current-environment} but a) there is no practically
+usable \LL/ language yet and b) I have a feeling I may want to write
+deeper individual tests.
 
 @ @c
 void
 test_integrate_lambda (void)
 {
-        boolean ok, ok0, ok1;
+        boolean ok;
         cell ie, oe, len;
-        cell t, d0, d1, p0, p1;
+        cell t, m, p;
         cell sn, si, sin, sinn, so, sout, soutn;
         char *prefix;
         char msg[TEST_BUFSIZE] = {0};
-        /* Although myriad these variables' scope does not reach across
-           the individual sections below */
+        /* Although myriad these variables' scope is small and they are
+           not used between the sections */
         sn    = sym("n");
         si    = sym("inner");
         sin   = sym("in");
@@ -4723,237 +4729,275 @@ test_integrate_lambda (void)
         so    = sym("outer");
         sout  = sym("out");
         soutn = sym("out-n");
-        @<Test building a |lambda|@>@;
-        @<Test entering a |lambda|@>@;
+        @<Test calling |lambda|@>@;
+        @<Test entering an |applicative| closure@>@;
+        @<Applicative test passing an |applicative|@>@;
+        @<Applicative test passing an |operative|@>@;
+        @<Applicative test returning an |applicative|@>@;
+        @<Applicative test returning an |operative|@>@;
 }
 
-@ An applicative closes over the |environment| that was active at the
-point |lambda| was encountered.
+@ An applicative closes over the local |environment| that was active
+at the point |lambda| was compiled.
 
 @d TEST_AB "(lambda x)"
 @d TEST_AB_PRINT "(lambda x ...)"
-@<Test building a |lambda|@>=
-Tmp_Test = Env = env_extend(Root);
+@<Test calling |lambda|@>=
+Env = env_extend(Root);
+Tmp_Test = test_copy_env();
 Acc = read_cstring(TEST_AB);
 prefix = TEST_AB_PRINT;
 vm_clear();
 interpret();
-ok = tap_ok(applicative_p(Acc), tmsgf("applicative?"));
-tap_again(ok, symbol_p(applicative_formals(Acc)), tmsgf("formals"));
 @#
+ok = tap_ok(applicative_p(Acc), tmsgf("applicative?"));
+tap_again(ok, applicative_formals(Acc) == sym("x"), tmsgf("formals"));
 if (ok) t = applicative_closure(Acc);
 tap_again(ok, environment_p(car(t)), tmsgf("environment?"));
-tap_again(ok, car(t) == Tmp_Test, tmsgf("closure"));
+tap_again(ok, test_is_env(car(t), Tmp_Test), tmsgf("closure"));
 @#
 if (ok) t = cdr(t);
 tap_again(ok, car(t) != Prog, tmsgf("prog")); /* \AM\ what? */
 test_vm_state_normal(prefix);
-tap_ok(Env == Tmp_Test, tmsgf("(unchanged? Env)"));
+tap_ok(test_compare_env(Tmp_Test), tmsgf("(unchanged? Env)"));
 
-@ To enter an applicative closure its |environment| and running
-program are restored atop a new stack frame which is removed upon
-leaving.
+@ When entering an applicative closure the |environment| it closed
+over at compile-time is extended (into a new frame which is removed
+when leaving the closure).
 
-@d TEST_AC "((lambda x (test!probe)))"
-@<Test entering a |lambda|@>=
-Tmp_Test = Env = env_extend(Root);
+@d TEST_AC "(lambda x (test!probe))"
+@d TEST_AC_PRINT "(" TEST_AC ")"
+@<Test entering an |applicative| closure@>=
+Env = env_extend(Root);
+Tmp_Test = cons(test_copy_env(), NIL);
 Acc = read_cstring(TEST_AC);
-prefix = TEST_AC;
 vm_clear();
 interpret();
+@#
+Env = env_extend(Root);
+cdr(Tmp_Test) = test_copy_env();
+t = read_cstring("(LAMBDA)");
+car(t) = Acc;
+Acc = t;
+prefix = TEST_AC_PRINT;
+vm_clear();
+interpret();
+@#
 t = assoc_value(Acc, sym("Env"));
-tap_ok(environment_p(t), tmsgf("(environment? (assoc-value T 'Env))"));
-tap_ok(env_parent(t) == Tmp_Test, tmsgf("(eq? (assoc-value T 'Env) (env.parent E))"));
+ok = tap_ok(environment_p(t), tmsgf("(environment? (assoc-value T 'Env))"));
+tap_again(ok, test_is_env(env_parent(t), car(Tmp_Test)),
+        tmsgf("(eq? (assoc-value T 'Env) (env.parent E))"));
 test_vm_state_normal(prefix);
-tap_ok(Env == Tmp_Test, tmsgf("(unchanged? Env)"));
+tap_ok(test_compare_env(cdr(Tmp_Test)), tmsgf("(unchanged? Env)"));
 
-@ Given that we can compile an enter a |lambda| closure, this test
-assures that we can enter a lambda closure that's compiled and then
-passed as an argument to a lambda closure. The expression being
-evaluated is \.{((lambda$_0$ (L$_1$ . x0) (L$_1$ (test!probe$_0$)))
-(lambda$_1$ (T$_0$ . x1) (test!probe$_1$)))}
+@ Given that we can compile and enter an applicative closure, this
+test assures that we can correctly enter a closure that's passed
+as an argument to it. The expression being evaluated is: {\tt((lambda$_0$
+(L$_1$ . x0) (L$_1$ (test!probe$_0$))) (lambda$_1$ (T$_0$ . x1)
+(test!probe$_1$)))} except that the same technique as the previous
+test compiles each expression in its own |environment|.
 
-The lambda$_0$ (the caller) expression is first evaluated to compile
-an applicative closure then this is repeated for lambda$_1$ (the
-callee). The closure created by lambda$_0$ is then entered with the
-lambda$_1$ applicative as an argument.
+Entering the outer closure extends the |environment| {\it E}$_0$
+to {\it E$_1$} which will be contained in the probe result that's
+an argument to the inner closure.
 
-The lambda$_0$ applicative then evaluates \.{test!probe}$_0$ and calls
-into the lambda$_1$ applicative that was given as an argument, passing the
-\.{test!probe}$_0$ result.
-
-The lambda$_1$ closure is then entered which evaluates and returns
-\.{test!probe}$_1$.
-
-\point 1. |Acc| is the result of \.{test!probe}$_1$ \.{P}$_1$.
-
-\point 2. |assoc_value|(\.{P}$_1$, '|Env|) is the dynamic environment
-\.{D}$_1$ in lambda$_1$.
-
-\point 3. |env_search|(\.{D}$_1$, '\.{T}$_0$) is the result of
-\.{test!probe}$_0$ \.{P}$_0$.
-
-\point 4. |assoc_value|(\.{P}$_0$, '|Env|) is the dynamic environment
-\.{D}$_0$ in lambda$_0$.
-
-\point 5. Each \.{D} should be unique but extend the same parent,
-which is |Env|.
+Entering the inner closure extends its |environment| {\it E}$_2$
+to {\it E}$_3$.
 
 @d TEST_ACA_INNER "(lambda (T . x1) (test!probe))"
 @d TEST_ACA_OUTER "(lambda (L . x0) (L (test!probe)))"
-@d TEST_ACA "(" TEST_ACA_OUTER TEST_ACA_INNER ")"
-@d TEST_ACA_PRINT "((LAMBDA) " TEST_ACA_INNER ")"
-@<Test entering a |lambda|@>=
-Tmp_Test = Env = env_extend(Root);
+@d TEST_ACA "(" TEST_ACA_OUTER "LAMBDA)"
+@d TEST_ACA_PRINT "(" TEST_ACA_OUTER " (LAMBDA))"
+@<Applicative test passing an |applicative|@>=
+Env = env_extend(Root); /* {\it E}$_2$ */
+Tmp_Test = cons(test_copy_env(), NIL);
+Acc = read_cstring(TEST_ACA_INNER);
+vm_clear();
+interpret();
+@#
+vms_push(Acc);
+Env = env_extend(Root); /* {\it E}$_0$ */
+cdr(Tmp_Test) = test_copy_env();
 Acc = read_cstring(TEST_ACA);
+cadr(Acc) = vms_pop();
 prefix = TEST_ACA_PRINT;
 vm_clear();
 interpret();
-p1 = Acc;
-d1 = assoc_value(p1, sym("Env"));
-p0 = env_search(d1, sym("T"));
-d0 = assoc_value(p0, sym("Env"));
-ok0 = tap_ok(environment_p(d0), tmsgf("(environment? caller)"));
-ok1 = tap_ok(environment_p(d1), tmsgf("(environment? callee)"));
-tap_ok(d0 != d1, tmsgf("(¬eq? caller callee)"));
-tap_again(ok0, env_parent(d0) == Env, tmsgf("(parent? caller)"));
-tap_again(ok1, env_parent(d1) == Env, tmsgf("(parent? callee)"));
+@#
+t = assoc_value(Acc, sym("Env")); /* {\it E}$_3$ */
+ok = tap_ok(environment_p(t), tmsgf("(environment? inner)"));
+if (ok) p = env_search(t, sym("T"));
+if (ok) m = assoc_value(p, sym("Env")); /* {\it E}$_1$ */
+tap_again(ok, environment_p(m), tmsgf("(environment? outer)"));
+tap_again(ok, m != t, tmsgf("(¬eq? outer inner)"));
+tap_again(ok, test_is_env(env_parent(m), cdr(Tmp_Test)),
+        tmsgf("(parent? outer)"));
+tap_again(ok, test_is_env(env_parent(t), car(Tmp_Test)),
+        tmsgf("(parent? inner)"));
 test_vm_state_normal(prefix);
-tap_ok(Env == Tmp_Test, tmsgf("(unchanged? Env)"));
+tap_ok(test_compare_env(cdr(Tmp_Test)), tmsgf("(unchanged? Env)"));
 
-@ The code to test calling a vov from a within a lambda is largely
-the same with an operative created by |vov| replacing the lambda$_1$
-callee:
+@ This is the same test, passing/entering an |operative|. The key
+difference is that the inner |operative| must evaluate its arguments
+itself. Additionally {\it test!probe} is an operative so an applicative
+variant is called: {\tt(vov ((A vov/args) (E vov/env))
+(test!probe-applying (eval (car A) E))))}.
 
-\.{(vov ((A vov/args) (T vov/env)) (test!probe-applying$_1$ (eval (car A)
-E) A E)))}.
+The same |environment|s are in play as in the previous test with
+the addition that {\it E}$_1$ will be passed into the inner closure
+in {\it vov/environment}.
 
-The result is different because the caller does not evaluate the
-arguments that are passed to the operative.
-
-\point 1 \AM\ 2. |Acc| is still the result of \.{test!probe}$_1$
-and '|Env| within it the dynamic environment \.{D}$_1$ in, this
-time, the vov.
-
-\point 3. \.{P}$_0$ is now the first argument to
-\.{test!probe-applying}$_1$.
-
-\point 4. \.{D}$_0$ must be the same as |E| the third---|caddr|---argument
-to \.{test!probe-applying}$_1$.
-
-\point 5. The environment ancestry is the same.
-
-@d TEST_ACO_INNER_BODY "(test!probe-applying (eval (car A) E) A E)"
-@d TEST_ACO_INNER "(vov ((A vov/args) (E vov/env))" TEST_ACO_INNER_BODY ")"
+@d TEST_ACO_INNER_BODY "(test!probe-applying (eval (car A) E))"
+@d TEST_ACO_INNER "(vov ((A vov/args) (E vov/env))"@| TEST_ACO_INNER_BODY ")"
 @d TEST_ACO_OUTER "(lambda (V . x0) (V (test!probe)))"
-@d TEST_ACO "(" TEST_ACO_OUTER TEST_ACO_INNER ")"
+@d TEST_ACO "(" TEST_ACO_OUTER "VOV)"
 @d TEST_ACO_PRINT "((LAMBDA) (vov (...) " TEST_ACO_INNER_BODY ")"
-@<Test entering a |lambda|@>=
-Tmp_Test = Env = env_extend(Root);
+@<Applicative test passing an |operative|@>=
+Env = env_extend(Root); /* {\it E}$_2$ */
+Tmp_Test = cons(test_copy_env(), NIL);
+Acc = read_cstring(TEST_ACO_INNER);
+vm_clear();
+interpret();
+@#
+vms_push(Acc);
+Env = env_extend(Root); /* {\it E}$_0$ */
+cdr(Tmp_Test) = test_copy_env();
 Acc = read_cstring(TEST_ACO);
+cadr(Acc) = vms_pop();
 prefix = TEST_ACO_PRINT;
 vm_clear();
 interpret();
-p1 = Acc;
-d1 = assoc_value(p1, sym("Env"));
-t = assoc_value(p1, sym("Args"));
-p0 = car(t);
-d0 = assoc_value(p0, sym("Env"));
-ok0 = tap_ok(environment_p(d0), tmsgf("(environment? caller)"));
-ok1 = tap_ok(environment_p(d1), tmsgf("(environment? callee)"));
-tap_ok(d0 != d1, tmsgf("(¬eq? caller callee)"));
-tap_ok(d0 == caddr(t), tmsgf("(eq? caller E)"));
-tap_again(ok0, env_parent(d0) == Env, tmsgf("(parent? caller)"));
-tap_again(ok1, env_parent(d1) == Env, tmsgf("(parent? callee)"));
+@#
+t = assoc_value(Acc, sym("Env")); /* {\it E}$_3$ */
+p = car(assoc_value(Acc, sym("Args")));
+m = assoc_value(p, sym("Env")); /* {\it E}$_1$ */
+ok = tap_ok(environment_p(m), tmsgf("(environment? outer)"));
+tap_again(ok, test_is_env(env_parent(m), cdr(Tmp_Test)),
+        tmsgf("(parent? outer)"));
+ok = tap_ok(environment_p(t), tmsgf("(environment? inner)"));
+@#
+if (ok) p = env_search(t, sym("E")); /* {\it E}$_1$ */
+tap_again(ok, environment_p(p), tmsgf("(environment? E)"));
+tap_again(ok, test_is_env(p, m), tmsgf("operative environment"));
+tap_ok(!test_is_env(m, t), tmsgf("(¬eq? outer inner)"));
+tap_again(ok, test_is_env(env_parent(t), car(Tmp_Test)),
+        tmsgf("(parent? inner)"));
 test_vm_state_normal(prefix);
-tap_ok(Env == Tmp_Test, tmsgf("(unchanged? Env)"));
+tap_ok(test_compare_env(cdr(Tmp_Test)), tmsgf("(unchanged? Env)"));
 
 @ Similar to applicatives which call into another closure are
-applicatives which return one. Starting with an inner-applicative
-using \.{(lambda (outer n) (lambda (inner n) (test!probe)))}.
+applicatives which return one. Starting with an
+|applicative|-returning-|applicative| {\tt(lambda (outer n) (lambda
+(inner n) (test!probe)))}.
 
 This is a function which takes two arguments, |outer| and |n| and
 creates another function which closes over them and takes two
 of its own arguments, |inner| and |n|.
 
-The test calls this by evaluating \.{((X 'out 'out-n) 'in 'in-n)}
+The test calls this by evaluating {\tt((X 'out 'out-n) 'in 'in-n)}
 with the above code inserted in the \.{X} position.
 
 When the inner lambda is evaluating {\it test!probe} its local
-environment should be an extension of the dynamic environment that
-was created when entering the outer lambda. That environment should
-itself be an extension of the local environment which is in |Env|.
+|environment| {\it E}$_2$ should be an extension of the dynamic
+|environment| {\it E}$_1$ that was created when entering the outer
+closure. {\it E}$_1$ should be an extension of the run-time
+|environment| {\it E}$_0$ when the closure was built.
 
 @d TEST_ARA_INNER "(lambda (inner n) (test!probe))"
-@d TEST_ARA_OUTER "(lambda (outer n)" TEST_ARA_INNER ")"
-@d TEST_ARA_RETURN "(" TEST_ARA_OUTER "'out 'out-n)"
-@d TEST_ARA_CALL "(" TEST_ARA_RETURN "'in 'in-n)"
-@d TEST_ARA_PRINT "(lambda (outer n) " TEST_ARA_INNER ")"
-@<Test entering a |lambda|@>=
-Tmp_Test = Env = env_extend(Root);
+@d TEST_ARA_BUILD "(lambda (outer n) " TEST_ARA_INNER ")"
+@d TEST_ARA_PRINT TEST_ARA_BUILD
+@d TEST_ARA_CALL "((LAMBDA 'out 'out-n) 'in 'in-n)"
+@<Applicative test returning an |applicative|@>=
+Env = env_extend(Root); /* {\it E}$_0$ */
+Tmp_Test = cons(test_copy_env(), NIL);
+Acc = read_cstring(TEST_ARA_BUILD);
 vm_clear();
-Acc = read_cstring(TEST_ARA_CALL);
-prefix = TEST_ARA_PRINT;
 interpret();
-ie = assoc_value(Acc, sym("Env"));
+@#
+vms_push(Acc);
+Env = env_extend(Root);
+cdr(Tmp_Test) = test_copy_env();
+Acc = read_cstring(TEST_ARA_CALL);
+caar(Acc) = vms_pop();
+prefix = TEST_ARA_PRINT;
+vm_clear();
+interpret();
+@#
+ie = assoc_value(Acc, sym("Env")); /* {\it E}$_2$ */
 ok = tap_ok(environment_p(ie), tmsgf("(environment? inner)"));
 tap_again(ok, env_search(ie, sn) == sinn, tmsgf("(eq? n 'in-n)"));
 tap_again(ok, env_search(ie, si) == sin, tmsgf("(eq? inner 'in)"));
 tap_again(ok, env_search(ie, so) == sout, tmsgf("(eq? outer 'out)"));
 @#
-if (ok) oe = env_parent(ie);
+if (ok) oe = env_parent(ie); /* {\it E}$_1$ */
 tap_again(ok, environment_p(oe), tmsgf("(environment? outer)"));
 tap_again(ok, env_search(oe, sn) == soutn, tmsgf("(eq? n 'out-n)"));
 tap_again(ok, undefined_p(env_search(oe, si)), tmsgf("(¬defined? inner)"));
 tap_again(ok, env_search(oe, so) == sout, tmsgf("(eq? outer 'out)"));
-tap_again(ok, env_parent(oe) == Env, tmsgf("(parent? outer)"));
+tap_again(ok, test_is_env(env_parent(oe), car(Tmp_Test)),
+          tmsgf("(parent? outer)")); /* {\it E}$_0$ */
 test_vm_state_normal(prefix);
-tap_ok(Env == Tmp_Test, tmsgf("(unchanged? Env)"));
+tap_ok(test_compare_env(cdr(Tmp_Test)), tmsgf("(unchanged? Env)"));
 
-@ Again, a vov-returning lambda looks similar to returning a lambda:
+@ Finally, an applicative closing over an operative it returns looks
+similar: {\tt(vov ((A vov/args) (E vov/env)) (test!probe-applying
+A E))}
 
-\.{(vov ((A vov/args) (E vov/env)) (test!probe-applying A E))}
+Again the same |environment|s are in play although this time the
+operative's arguments are unevaluated and {\it E}$_3$, the run-time
+environment, is passed in {\it vov/environment}.
 
 @d TEST_ARO_INNER_BODY "(test!probe-applying A E)"
 @d TEST_ARO_INNER "(vov ((A vov/args) (E vov/env))" TEST_ARO_INNER_BODY ")"
-@d TEST_ARO_OUTER "(lambda (outer n)" TEST_ARO_INNER ")"
-@d TEST_ARO_RETURN "(" TEST_ARO_OUTER "'out 'out-n)"
-@d TEST_ARO_CALL "(" TEST_ARO_RETURN "'in 'in-n)"
-@d TEST_ARO_PRINT "(LAMBDA (VOV " TEST_ARO_INNER_BODY "))"
-@<Test entering a |lambda|@>=
-Tmp_Test = Env = env_extend(Root);
+@d TEST_ARO_BUILD "(lambda (outer n)" TEST_ARO_INNER ")"
+@d TEST_ARO_CALL "((LAMBDA 'out 'out-n) 'in 'in-n)"
+@d TEST_ARO_PRINT "(LAMBDA (vov (...) " TEST_ARO_INNER_BODY "))"
+@<Applicative test returning an |operative|@>=
+Env = env_extend(Root); /* {\it E}$_0$ */
+Tmp_Test = cons(test_copy_env(), NIL);
+Acc = read_cstring(TEST_ARO_BUILD);
+vm_clear();
+interpret();
+@#
+vms_push(Acc);
+Env = env_extend(Root); /* {\it E}$_3$ */
+cdr(Tmp_Test) = test_copy_env();
 Acc = read_cstring(TEST_ARO_CALL);
+caar(Acc) = vms_pop();
 prefix = TEST_ARO_PRINT;
 vm_clear();
 interpret();
 @#
-ie = assoc_value(Acc, sym("Env"));
+ie = assoc_value(Acc, sym("Env")); /* {\it E}$_2$ */
 ok = tap_ok(environment_p(ie), tmsgf("(environment? inner)"));
 tap_again(ok, undefined_p(env_here(ie, sn)), tmsgf("(¬lifted? n)"));
 tap_again(ok, undefined_p(env_here(ie, so)), tmsgf("(¬lifted? outer)"));
 tap_again(ok, env_search(ie, sn) == soutn, tmsgf("(eq? n 'out-n)"));
 tap_again(ok, env_search(ie, so) == sout, tmsgf("(eq? outer 'out)"));
 @#
-if (ok) oe = env_parent(ie);
+if (ok) oe = env_parent(ie); /* {\it E}$_1$ */
 tap_again(ok, environment_p(oe), tmsgf("(environment? outer)"));
 tap_again(ok, env_search(ie, sn) == soutn, tmsgf("(eq? n 'out-n)"));
 tap_again(ok, env_search(ie, so) == sout, tmsgf("(eq? outer 'out)"));
 tap_again(ok, undefined_p(env_search(oe, sym("A"))), tmsgf("(¬defined? A)"));
 tap_again(ok, undefined_p(env_search(oe, sym("E"))), tmsgf("(¬defined? E)"));
-tap_again(ok, env_parent(oe) == Env, tmsgf("(parent? outer)"));
+tap_again(ok, test_is_env(env_parent(oe), car(Tmp_Test)),
+        tmsgf("(parent? outer)")); /* {\it E}$_0$ */
 @#
 if (ok) t = env_search(ie, sym("A"));
 tap_again(ok, true_p(list_p(t, FALSE, &len)), tmsgf("(list? A)"));
 tap_again(ok, int_value(len) == 2, tmsgf("length"));
 tap_again(ok, syntax_p(car(t)) && cdar(t) == sin
-          && syntax_p(cadr(t)) && cdadr(t) == sinn, tmsgf("unevaluated"));
-tap_again(ok, env_search(ie, sym("E")) == Env, tmsgf("(eq? E Env)"));
+        && syntax_p(cadr(t)) && cdadr(t) == sinn, tmsgf("unevaluated"));
+tap_again(ok, test_is_env(env_search(ie, sym("E")), cdr(Tmp_Test)),
+        tmsgf("(eq? E Env)")); /* {\it E}$_3$ */
 test_vm_state_normal(prefix);
-tap_ok(Env == Tmp_Test, tmsgf("(unchanged? Env)"));
+tap_ok(test_compare_env(cdr(Tmp_Test)), tmsgf("(unchanged? Env)"));
 
 @* Operatives. Testing |vov| follows the same plan as |lambda| with
 the obvious changes to which environment is expected to be found
-where.
+where and care taken to ensure that arguments are evaluated when
+appropriate.
 
 @ @c
 void
@@ -4971,22 +5015,27 @@ test_integrate_vov (void)
         so    = sym("outer");
         sout  = sym("out");
         soutn = sym("out-n");
-        @<Test building a |vov|@>@;
-        @<Test entering a |vov|@>@;
+        @<Test calling |vov|@>@;
+        @<Test entering an |operative| closure@>@;
+        @<Operative test passing an |applicative|@>@;
+        @<Operative test passing an |operative|@>@;
+        @<Operative test returning an |applicative|@>@;
+        @<Operative test returning an |operative|@>@;
 }
 
 @
-@d TEST_OB_BODY "(vov ((E vov/env)) )"
+@d TEST_OB "(vov ((E vov/env)))"
 @d TEST_OB_PRINT "(vov ((E vov/env)) ...)"
-@<Test building a |vov|@>=
-Tmp_Test = Env = env_extend(Root);
-Acc = read_cstring(TEST_OB_BODY);
+@<Test calling |vov|@>=
+Env = env_extend(Root);
+Tmp_Test = test_copy_env();
+Acc = read_cstring(TEST_OB);
 prefix = TEST_OB_PRINT;
 vm_clear();
 interpret();
-ok = tap_ok(operative_p(Acc), tmsgf("operative?"));
-tap_again(ok, pair_p(operative_formals(Acc)), tmsgf("formals"));
 @#
+ok = tap_ok(operative_p(Acc), tmsgf("operative?"));
+tap_again(ok, pair_p(t = operative_formals(Acc)), tmsgf("formals"));
 if (ok) t = operative_closure(Acc);
 tap_again(ok, environment_p(car(t)), tmsgf("environment?"));
 tap_again(ok, car(t) == Env, tmsgf("closure"));
@@ -4994,128 +5043,199 @@ tap_again(ok, car(t) == Env, tmsgf("closure"));
 if (ok) t = cdr(t);
 tap_again(ok, car(t) != Prog, tmsgf("prog")); /* \AM\ what? */
 test_vm_state_normal(prefix);
-tap_ok(Env == Tmp_Test, tmsgf("(unchanged? Env)"));
+tap_ok(test_compare_env(Tmp_Test), tmsgf("(unchanged? Env)"));
 
 @ Upon entering an operative closure:
 
-\point 1. The local |environment| when it was created is extended
-to a new |environment| contaning the 1-3 |vov| arguments.
+\point 1. The run-time |environment| {\it E}$_0$ when it was created
+is extended to a new |environment| {\it E}$_1$ contaning the 1-3
+|vov| arguments.
 
-\point 2. The local |environment| when it was entered is passed to
-the |vov| in the argument in the {\it vov/env} (or {\it vov/environment})
-position.
+\point 2. The run-time |environment| {\it E}$_2$ when it was entered
+is passed to the |vov| in the argument in the {\it vov/environment}
+(or {\it vov/env}) position.
 
-And upon leaving it the stack and the local |environment| (|Env|)
-are restored.
+\point 3. Upon leaving it the stack and the run-time |environment|
+are restored unchanged.
 
-@d TEST_OC_BODY "(vov ((A vov/args) (E vov/env)) (test!probe-applying A E))"
-@d TEST_OC "(" TEST_OC_BODY ")"
+@d TEST_OC "(vov ((A vov/args) (E vov/env)) (test!probe-applying A E))"
 @d TEST_OC_PRINT "((vov (...) (test!probe-applying A E)))"
-@<Test entering a |vov|@>=
-Tmp_Test = Env = env_extend(Root);
+@<Test entering an |operative| closure@>=
+Env = env_extend(Root); /* {\it E}$_0$ */
+Tmp_Test = cons(test_copy_env(), NIL);
 Acc = read_cstring(TEST_OC);
+vm_clear();
+interpret();
+@#
+Env = env_extend(Root); /* {\it E}$_2$ */
+cdr(Tmp_Test) = test_copy_env();
+t = read_cstring("(VOV)");
+car(t) = Acc;
+Acc = t;
 prefix = TEST_OC_PRINT;
 vm_clear();
 interpret();
-t = assoc_value(Acc, sym("Env"));
+@#
+t = assoc_value(Acc, sym("Env")); /* {\it E}$_1$ */
 ok = tap_ok(environment_p(t),
-            tmsgf("(environment? (assoc-value T 'Env))"));
-tap_again(ok, env_parent(t) == Env,
-          tmsgf("(eq? (assoc-value T 'Env) (env.parent E))"));
-if (ok) p = env_search(t, sym("E"));
+        tmsgf("(environment? (assoc-value T 'Env))"));
+tap_again(ok, test_is_env(env_parent(t), car(Tmp_Test)),
+        tmsgf("(eq? (assoc-value T 'Env) (env.parent E))"));
+if (ok) p = env_search(t, sym("E")); /* {\it E}$_2$ */
 tap_again(ok, environment_p(p), tmsgf("(environment? E)"));
-tap_again(ok, p == Env, tmsgf("(eq? T (current-environment))"));
+tap_again(ok, test_is_env(p, cdr(Tmp_Test)),
+        tmsgf("(eq? T (current-environment))"));
 test_vm_state_normal(prefix);
-tap_ok(Env == Tmp_Test, tmsgf("(unchanged? Env)"));
+tap_ok(test_compare_env(cdr(Tmp_Test)), tmsgf("(unchanged? Env)"));
 
 @ Calling an applicative inside an operative closure is no different
-from any other function call. An operative closure is
-entered with the result of |lambda| as an argument: \.{((V) (lambda
-x1 (test!probe)))}.
+from any other function call. An operative closure is entered with
+the result of |lambda| as an argument: {\tt((VOV) (lambda x1
+(test!probe)))}.
 
-Operative's arguments are not evaluated so whether a |lambda| expression,
-variable lookup or whatever the
-operative evaluates its argument in the caller's environment
-then calls into it along with its own probe:
+Operative's arguments are not evaluated so whether a |lambda|
+expression, variable lookup or whatever the operative evaluates its
+argument in the caller's |environment| then calls into it along
+with its own probe: {\tt((vov (...) (cons ((eval (car A) E))
+(test!probe))) (LAMBDA))}.
 
-\.{((vov ... (cons ((eval (car A) E)) (test!probe))) (L))}.
+The operative's compile-time |environment| {\it E}$_0$ is extended
+up entering it to {\it E}$_1$. The run-time |environment| {\it
+E}$_2$ is extended when entering the callee's applicative and is
+passed to the operative.
 
 @d TEST_OCA_INNER "(lambda x1 (test!probe))"
-@d TEST_OCA_BODY "(cons ((eval (car A) E)) (test!probe))"
-@d TEST_OCA_OUTER "(vov ((A vov/args) (E vov/env))" TEST_OCA_BODY ")"
-@d TEST_OCA "(" TEST_OCA_OUTER TEST_OCA_INNER ")"
+@d TEST_OCA_OUTER "(vov ((A vov/args) (E vov/env))"
+        "(cons ((eval (car A) E)) (test!probe)))"
+@d TEST_OCA "(" TEST_OCA_OUTER "LAMBDA)"
 @d TEST_OCA_PRINT "((VOV) " TEST_OCA_INNER ")"
-@<Test entering a |vov|@>=
-Tmp_Test = Env = env_extend(Root);
+@<Operative test passing an |applicative|@>=
+Env = env_extend(Root); /* {\it E}$_0$ */
+Tmp_Test = cons(test_copy_env(), NIL);
+Acc = read_cstring(TEST_OCA_INNER);
+vm_clear();
+interpret();
+@#
+vms_push(Acc);
+Env = env_extend(Root); /* {\it E}$_2$ */
+cdr(Tmp_Test) = test_copy_env();
 Acc = read_cstring(TEST_OCA);
+cadr(Acc) = vms_pop();
 prefix = TEST_OCA_PRINT;
 vm_clear();
 interpret();
-t = assoc_value(cdr(Acc), sym("Env"));
+@#
+t = assoc_value(cdr(Acc), sym("Env")); /* {\it E}$_1$ */
 ok = tap_ok(environment_p(t),
         tmsgf("(environment? (assoc-value (cdr T) 'Env))"));
-tap_again(ok, env_parent(t) == Env, tmsgf("(parent? E)"));
-p = assoc_value(car(Acc), sym("Env"));
+tap_again(ok, test_is_env(env_parent(t), cdr(Tmp_Test)),
+        tmsgf("(parent? E)")); /* {\it E}$_0$ */
+tap_again(ok, test_is_env(env_search(t, sym("E")), cdr(Tmp_Test)),
+        tmsgf("(eq? E vov/env)"));
+p = assoc_value(car(Acc), sym("Env")); /* {\it E}$_3$ */
 ok = tap_ok(environment_p(p),
         tmsgf("(environment? (assoc-value (car T) 'Env))"));
-tap_again(ok, env_parent(p) == Env, tmsgf("(parent? E')"));
+tap_again(ok, test_is_env(env_parent(p), car(Tmp_Test)),
+        tmsgf("(parent? E')")); /* {\it E}$_2$ */
 test_vm_state_normal(prefix);
-tap_ok(Env == Tmp_Test, tmsgf("(unchanged? Env)"));
+tap_ok(test_compare_env(cdr(Tmp_Test)), tmsgf("(unchanged? Env)"));
 
-@ --- --- --- Calling an operative inside an operative.
+@ To verify calling an operative argument to an operative closure
+there are three tests to perform:
 
-// cdr env is on Env, has xE/xA
-// car env has yE which is cdr env
-// car env in on Env, != cdr env
+\point 1. The run-time |environment| {\it E}$_2$ in the inner
+operative is an extension of the one it was originally created with
+{\it E}$_1$.
+
+\point 2. The run-time |environment| {\it E}$_1$ in the outer
+operative is an extension of its compile-time |environment| {\it
+E}$_0$.
+
+\point 3. {\it E}$_1$ is the {\it vov/environment} argument of the
+inner operative.
 
 @d TEST_OCO_INNER "(vov ((yE vov/env)) (test!probe))"
-@d TEST_OCO_OUTER "(vov ((xA vov/args) (xE vov/env))"
+@d TEST_OCO_OUTER "(vov ((xA vov/args) (xE vov/env))"@|
         "(cons ((eval (car xA) xE)) (test!probe)))"
 @d TEST_OCO "(" TEST_OCO_OUTER TEST_OCO_INNER ")"
-@d TEST_OCO_PRINT "((VOV) (vov (...) (test!probe)))"
-@<Test entering a |vov|@>=
-Tmp_Test = Env = env_extend(Root);
-env_set(Env, sym("anything"), sym("anything-else"), btrue);
+@d TEST_OCO_PRINT "((VOV) " TEST_OCO_INNER ")"
+@<Operative test passing an |operative|@>=
+Env = env_extend(Root); /* {\it E}$_0$ */
+Tmp_Test = cons(test_copy_env(), NIL);
+Acc = read_cstring(TEST_OCO_INNER);
+vm_clear();
+interpret();
+@#
+vms_push(Acc);
+Env = env_extend(Root);
+cdr(Tmp_Test) = test_copy_env();
 Acc = read_cstring(TEST_OCO);
+cadr(Acc) = vms_pop();
 prefix = TEST_OCO_PRINT;
 vm_clear();
 interpret();
-t = assoc_value(cdr(Acc), sym("Env"));
+@#
+t = assoc_value(car(Acc), sym("Env")); /* {\it E}$_2$ */
 ok = tap_ok(environment_p(t),
-        tmsgf("(environment? (assoc-value (cdr T) 'Env))"));
-tap_again(ok, env_parent(t) == Env, tmsgf("(parent? E)"));
-tap_again(ok, !undefined_p(env_here(t, sym("xE"))), tmsgf("(env.exists? E xE)"));
-tap_again(ok, !undefined_p(env_here(t, sym("xA"))), tmsgf("(env.exists? E xA)"));
-m = assoc_value(car(Acc), sym("Env"));
-ok = tap_ok(environment_p(m),
         tmsgf("(environment? (assoc-value (car T) 'Env))"));
-tap_again(ok, env_parent(m) == Env, tmsgf("parent? E')"));
-tap_again(ok, m != t, tmsgf("(¬eq? E E')"));
-p = env_here(m, sym("yE"));
-tap_again(ok, !undefined_p(p), tmsgf("(env.exists? E xE)"));
-tap_ok(p == t, tmsgf("(eq? E E')"));
+tap_again(ok, test_is_env(env_parent(t), car(Tmp_Test)),
+        tmsgf("(parent? E)")); /* {\it E}$_1$ */
+m = env_here(t, sym("yE")); /* {\it E}$_1$ */
+tap_again(ok, !undefined_p(m), tmsgf("(env.exists? E yE)"));
+@#
+p = assoc_value(cdr(Acc), sym("Env")); /* {\it E}$_1$ */
+ok = tap_ok(environment_p(t),
+tmsgf("(environment? (assoc-value (cdr T) 'Env))"));
+tap_again(ok, test_is_env(m, p), tmsgf("operative environment"));
+tap_ok(!test_is_env(p, t), tmsgf("(¬eq? E' E)"));
+tap_again(ok, test_is_env(env_parent(p), cdr(Tmp_Test)),
+        tmsgf("(parent? E')")); /* {\it E}$_0$ */
+tap_again(ok, !undefined_p(env_here(p, sym("xE"))),
+        tmsgf("(env.exists? E' xE)"));
+tap_again(ok, !undefined_p(env_here(p, sym("xA"))),
+        tmsgf("(env.exists? E' xA)"));
+@#
+tap_ok(test_is_env(p, m), tmsgf("(eq? E' yE)"));
+@#
 test_vm_state_normal(prefix);
-tap_ok(Env == Tmp_Test, tmsgf("(unchanged? Env)"));
+tap_ok(test_compare_env(cdr(Tmp_Test)), tmsgf("(unchanged? Env)"));
 
-@ --- --- --- Calling an applicative returned by an operative.
+@ Building applicatives and operatives within an operative requires
+extra care to evaluate code in the correct |environment|.
+
+The |environment| {\it E}$_1$ that a returned applicative closes
+over, and will extend into {\it E}$_2$ when it's entered, is the
+local |environment| of the operative.
+
+The outer operative evaluates its two arguments in its caller's
+|environment| {\it E}$_0$, saving them in |outer| and |n| in turn,
+and then calls |lambda|.
 
 @d TEST_ORA_INNER "(lambda (inner n) (test!probe))"
-@d TEST_ORA_MIXUP "(define! (current-environment) outer 'out)"
-        "(define! (current-environment) inner (eval (car yA) yE))"
+@d TEST_ORA_MIXUP "(define! (current-environment) inner 'out)"
+        "(define! (current-environment) outer (eval (car yA) yE))"
         "(define! (current-environment) n (eval (car (cdr yA)) yE))"
-@d TEST_ORA_OUTER "(vov ((yA vov/args) (yE vov/env))"
+@d TEST_ORA_BUILD "(vov ((yA vov/args) (yE vov/env))"
         TEST_ORA_MIXUP TEST_ORA_INNER ")"
-@d TEST_ORA_RETURN "(" TEST_ORA_OUTER " 'out 'out-n)"
-@d TEST_ORA_CALL "(" TEST_ORA_RETURN " 'in 'in-n)"
+@d TEST_ORA_CALL "((VOV 'out 'out-n) 'in 'in-n)"
 @d TEST_ORA_PRINT "(vov (...) (lambda (inner n) (test!probe)))"
-@<Test entering a |vov|@>=
-Tmp_Test = Env = env_extend(Root);
-env_set(Env, sym("anything"), sym("anything-else"), btrue);
+@<Operative test returning an |applicative|@>=
+Env = env_extend(Root); /* {\it E}$_0$ */
+Tmp_Test = cons(test_copy_env(), NIL);
+Acc = read_cstring(TEST_ORA_BUILD);
+vm_clear();
+interpret();
+@#
+vms_push(Acc);
+Env = env_extend(Root);
+cdr(Tmp_Test) = test_copy_env();
 Acc = read_cstring(TEST_ORA_CALL);
+caar(Acc) = vms_pop();
 prefix = TEST_ORA_PRINT;
 vm_clear();
 interpret();
-t = assoc_value(Acc, sym("Env"));
+@#
+t = assoc_value(Acc, sym("Env")); /* {\it E}$_2$ */
 ok = tap_ok(environment_p(t),
         tmsgf("(environment? (assoc-value (cdr T) 'Env))"));
 m = env_here(t, sym("n"));
@@ -5126,45 +5246,71 @@ tap_again(ok, undefined_p(env_here(t, sym("outer"))),
           tmsgf("(¬exists-here? E outer)"));
 m = env_search(t, sym("outer"));
 tap_again(ok, m == sout, tmsgf("(eq? (env.lookup E inner) 'out)"));
-if (ok) m = env_parent(t);
-tap_again(ok, !undefined_p(env_here(m, sym("yE"))),
+@#
+if (ok) p = env_parent(t); /* {\it E}$_1$ */
+tap_again(ok, !undefined_p(env_here(p, sym("yE"))),
           tmsgf("(exists? (env.parent E) yE)"));
-tap_again(ok, env_parent(m) == Env,
-          tmsgf("(env.parent? E')"));
+tap_again(ok, test_is_env(env_parent(p), car(Tmp_Test)),
+          tmsgf("(env.parent? E')")); /* {\it E}$_0$ */
+m = env_here(p, sym("n"));
+tap_again(ok, m == soutn, tmsgf("(eq? (env.here E n) 'out-n)"));
+m = env_here(p, sym("inner"));
+tap_again(ok, m == sout, tmsgf("(eq? (env.here E inner) 'out)"));
+m = env_here(p, sym("outer"));
+tap_again(ok, m == sout, tmsgf("(eq? (env.lookup E inner) 'out)"));
 test_vm_state_normal(prefix);
-tap_ok(Env == Tmp_Test, tmsgf("(unchanged? Env)"));
+tap_ok(test_compare_env(cdr(Tmp_Test)), tmsgf("(unchanged? Env)"));
 
-@ Calling an operative returned by an operative.
+@ Closing over an operative within an operative requires even more
+care that the correct environment is used so that the returned
+operative has access to its creator's local environment.
+
+The creating operative extends the |environment| {\it E}$_0$ it
+closes over and this |environment| {\it E}$_1$ is then closed over
+by the returned operative. {\it E}$_1$ is extended upon entering
+the inner operative into |environment| {\it E}$_2$.
+
+The same run-time |environment| {\it E}$_3$ is passed as an argument
+to the each operative.
 
 @d TEST_ORO_INNER_BODY "(test!probe-applying (eval '(test!probe) oE))"
 @d TEST_ORO_INNER "(vov ((oE vov/env))" TEST_ORO_INNER_BODY ")"
-@d TEST_ORO_OUTER "(vov ((A vov/args) (E vov/env))"
+@d TEST_ORO_BUILD "(vov ((A vov/args) (E vov/env))"
         TEST_ORO_INNER ")"
-@d TEST_ORO_RETURN "(" TEST_ORO_OUTER "'out 'out-n)"
-@d TEST_ORO_CALL "(" TEST_ORO_RETURN "'in 'in-n)"
-@d TEST_ORO_PRINT "(VOV (VOV (test!probe-applying (eval '(test!probe) E))))"
-@<Test entering a |vov|@>=
-Tmp_Test = Env = env_extend(Root);
+@d TEST_ORO_CALL "((VOV 'out 'out-n) 'in 'in-n)"
+@d TEST_ORO_PRINT "(VOV (vov (...) (test!probe (eval '(test!probe) E))))"
+@<Operative test returning an |operative|@>=
+Env = env_extend(Root); /* {\it E}$_0$ */
+Tmp_Test = cons(test_copy_env(), NIL);
+Acc = read_cstring(TEST_ORO_BUILD);
+vm_clear();
+interpret();
+@#
+vms_push(Acc);
+Env = env_extend(Root); /* {\it E}$_3$ */
+cdr(Tmp_Test) = test_copy_env();
 Acc = read_cstring(TEST_ORO_CALL);
+caar(Acc) = vms_pop();
 prefix = TEST_ORO_PRINT;
 vm_clear();
 interpret();
-t = assoc_value(Acc, sym("Env"));
+@#
+t = assoc_value(Acc, sym("Env")); /* {\it E}$_2$ */
 ok = tap_ok(environment_p(t),
         tmsgf("(environment? (assoc-value T 'Env))"));
-m = env_here(t, sym("oE"));
-tap_again(ok, !undefined_p(m), tmsgf("(env.exists? E oE)"));
-tap_ok(m == Env, tmsgf("(eq? E Env)"));
-if (ok) m = env_parent(t);
+if (ok) m = env_here(t, sym("oE")); /* {\it E}$_3$ */
+tap_again(ok, environment_p(m), tmsgf("(environment? oE)"));
+tap_again(ok, m == cdr(Tmp_Test), tmsgf("(eq? E Env)"));
+if (ok) m = env_parent(t); /* {\it E}$_1$ */
 tap_again(ok, !undefined_p(env_here(m, sym("A"))),
           tmsgf("(env.exists? E' A)"));
-if (ok) p = env_here(m, sym("E"));
+if (ok) p = env_here(m, sym("E")); /* {\it E}$_3$ */
 tap_again(ok, !undefined_p(env_here(m, sym("E"))),
           tmsgf("(env.exists? E' E)"));
-tap_again(ok, p == Env, tmsgf("(eq? E'' Env)"));
-tap_again(ok, env_parent(m) == Env, tmsgf("(eq? (env.parent E') Env)"));
+tap_again(ok, p == cdr(Tmp_Test), tmsgf("(eq? E'' Env)"));
+tap_again(ok, env_parent(m) == car(Tmp_Test), tmsgf("(eq? (env.parent E') Env)"));
 test_vm_state_normal(prefix);
-tap_ok(Env == Tmp_Test, tmsgf("(unchanged? Env)"));
+tap_ok(test_compare_env(cdr(Tmp_Test)), tmsgf("(unchanged? Env)"));
 
 @* Exceptions. When an error occurs at run-time it has the option
 (unimplemented) to be handled at run-time but if it isn't then
