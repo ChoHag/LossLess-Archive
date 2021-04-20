@@ -1517,6 +1517,7 @@ but does return to the previous jump buffer if the handler fails.
                 return EXIT_FAILURE;
         }
         if (setjmp(Goto_Error)) {
+                Acc = sym("ABORT");
                 return EXIT_FAILURE;
         }
         vm_init_imp();
@@ -3956,10 +3957,15 @@ main (int    argc,
       char **argv __unused)
 {
         volatile boolean first = btrue;
+#ifndef LLT_BARE_TEST
         vm_init();
         if (argc > 1)
                 error(ERR_ARITY_EXTRA, NIL);
         vm_prepare();
+#else
+        setjmp(Goto_Begin);
+        setjmp(Goto_Error);
+#endif
         if (!first) {
                 printf("Bail out! Unhandled exception in test\n");
                 return EXIT_FAILURE;
@@ -4082,6 +4088,8 @@ end of testing with an argument of 0 to emit exactly one test plan.
 @d tap_pass(m) tap_ok(btrue, (m))
 @d tap_again(t, r, m) tap_ok(((t) = ((t) && (r))), (m)) /* intentional
                                                            assignment */
+@d tap_more(t, r, m) (t) &= tap_ok((r), (m))
+@d tap_or(p,m) if (!tap_ok((p),(m)))
 @<Function dec...@>=
 #ifdef LL_TEST
 void tap_plan (int);
@@ -4143,12 +4151,12 @@ in-line.
 @c
 @q CWEB doesn't like/understand variadic macros @>
 @q Also it puts the gap in the wrong place @>
-#define tmsgf(...)@,@,@,@,@,test_vmsgf(msg, prefix, __VA_ARGS__)
+#define tmsgf(...)@,@,@,@,@,test_msgf(msg, prefix, __VA_ARGS__)
 char *
-test_vmsgf (char *tmsg,
-            char *tsrc,
-            char *fmt,
-            ...)
+test_msgf (char *tmsg,
+           const char *tsrc,
+           char *fmt,
+           ...)
 {
         char ttmp[TEST_BUFSIZE] = {0};
         int ret;
@@ -4243,45 +4251,50 @@ test_main (void)
 
 @* Unit Tests. This is the very boring process of laboriously
 checking that each function or otherwise segregable unit of code
-does what it says on the tin. The trick in this section is to, for
-each unit, identify what it might consider pathological (but not
-impossible) input[s] and verify that it responds correctly, whether
-by return value, state change or error.
+does what it says on the tin. For want of a better model to follow
+I've taken inspiration from Mike Bland's article ``Goto Fail,
+Heartbleed, and Unit Testing Culture'' describing how he created
+unit tests for the major OpenSSL vulnerabilities known as ``goto
+fail'' and ``Heartbleed''. The article itself is behind some sort
+of Google wall but \pdfURL{Martin Fowler has reproduced it at
+https://martinfowler.com/articles/testing-culture.html}
+{https://martinfowler.com/articles/testing-culture.html}.
 
-@<Select a unit...@>=
-if (argc != 3)
-        error(ERR_ARITY_MISSING, NIL);
-if (argv[2][1] != '\0')
-        error(ERR_ARITY_SYNTAX, NIL);
-switch(argv[2][0]) {
-case 's':
-        test_unit_stacks();@+
-        break;
-default:
-        error(ERR_UNEXPECTED, NIL);@+
-        break;
-}
+@<Type definitions@>=
+#define LLTF_BASE_HEADER            \
+        const char *name;           \
+        test_fixture_thunk prepare; \
+        test_fixture_thunk destroy
+typedef struct lltf_Base lltf_Base;
+typedef void @[@] (*test_fixture_thunk) (struct lltf_Base *);
+struct lltf_Base {
+        LLTF_BASE_HEADER;
+};
+typedef boolean @[@] (*test_unit) (void);
 
-@ Skipping the basic memory management and garbage collector for
-the time being we come to object storage, starting with the stacks.
-
+@
+@d test_single(s) test_single_imp(s, 0)
+@d test_suite(s) test_suite_imp(s, 0)
 @c
 void
-test_unit_stacks (void)
+test_single_imp (test_unit suite,
+                 int id)
 {
-        @<Unit-test the VM \AM\ compiler stacks@>@;
-        @<Unit-test the run-time stack@>@;
+        char msg[TEST_BUFSIZE] = {0};
+        boolean ok;
+        ok = suite();
+        tap_ok(ok, test_msgf(msg, "Test case", "%d", id));
 }
 
-@ Blurb.
-@<Unit-test the VM...@>=
-/*TODO: |vms_clear|, |vms_pop|, |vms_push|, |vms_ref|, |vms_set|,
-  |cts_reset| */
+void
+test_suite_imp (test_unit *suite,
+                int start)
+{
+        int i;
+        for (i = start; *suite; suite++, i++)
+                test_single_imp(*suite, i);
+}
 
-@ Blurb.
-@<Unit-test the run...@>=
-/*TODO: |rts_clear|, |rts_pop|, |rts_prepare|, |rts_push|, |rts_ref|,
-  |rts_ref_abs|, |rts_reset|, |rts_set|, |rts_set_abs| */
 
 @* Pair Integration. With the basic building blocks' interactions
 tested we arrive at the critical integration between the compiler
