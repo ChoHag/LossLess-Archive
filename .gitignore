@@ -9,15 +9,18 @@
 .#*
 \#*
 
-tmp/
+*.aux
 *.core
 *.idx
 *.log
+*.o
 *.scn
 *.toc
 lossless
-lltest
 lossless.c
+lossless.h
 lossless.pdf
 lossless.tex
-
+repl.c
+t/
+tmp/

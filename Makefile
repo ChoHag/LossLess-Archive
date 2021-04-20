@@ -3,31 +3,59 @@ CWEAVE?=  cweave
 PDFTEX?=  pdftex
 CFLAGS+=  -Wall -Wpedantic -Wextra
 
-lossless: lossless.c
-	$(CC) $(CFLAGS) -o lossless lossless.c
+SOURCES:=       lossless.c repl.c
+OBJECTS:=       lossless.o repl.o
+TESTS:=         \
+	t/eval.t \
+	t/exception.t \
+	t/if.t \
+	t/lambda.t \
+	t/pair.t \
+	t/sanity.t \
+	t/vov.t
+TEST_SOURCES:= \
+	t/eval.c \
+	t/exception.c \
+	t/if.c \
+	t/lambda.c \
+	t/pair.c \
+	t/sanity.c \
+	t/vov.c
 
-# If lltest doesn't depend on lossless it can result in an old llbuild
-# of lltest not being replaced under some conditions.
-lltest: lossless.c lossless
-	$(CC) $(CFLAGS) -DLL_TEST -o lltest lossless.c
+all: lossless lossless.pdf
+
+full: test all
 
 lossless.pdf: lossless.tex
 	$(PDFTEX) lossless.tex
 
-all: lossless lossless.pdf
-
-lossless.c: lossless.w
-	$(CTANGLE) lossless.w
-
 lossless.tex: lossless.w
 	$(CWEAVE) lossless.w
 
-# test depends on both binaries to guard against testing one thing and
-# shipping another.
-test: lossless lltest
-	PATH=..:$$PATH $(MAKE) -C t
+lossless: $(OBJECTS)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) -o lossless $(OBJECTS)
+	strip lossless
+
+$(OBJECTS): $(SOURCES)
+
+$(SOURCES) $(TEST_SOURCES): lossless.w
+	$(CTANGLE) lossless.w
+
+test: $(TESTS)
+	prove -vr -e '' t
+
+$(TESTS): t $(TEST_SOURCES)
+
+t:
+	mkdir -p t
+
+.SUFFIXES: .t
+
+.c.t:
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) -I. -o $@ $<
 
 clean:
 	rm -f core *.core *.idx *.log *.scn *.toc *.o
-	rm -f lossless.c lossless lltest lossless.tex lossless.pdf
-	$(MAKE) -C t clean
+	rm -f lossless *.o
+	rm -f repl.c lossless.c lossless.tex lossless.pdf
+	rm -f t/*.c t/*.o t/*.t

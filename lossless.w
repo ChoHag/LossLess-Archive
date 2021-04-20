@@ -42,7 +42,19 @@ After a few iterations including being briefly ported to perl this
 rather different code is the result, although at its core it follows
 the same design.
 
-The structure is of a virtual machine with a single accumulator
+\LL/ is built as a library. The header file \.{lossless.h} can be
+included to link against it, which the REPL does.
+
+@(lossless.h@>=
+#ifndef LOSSLESS_H
+#define LOSSLESS_H
+@<API headers@>@;
+@h
+@<Type definitions@>@;
+@<API declarations@>@;
+#endif
+
+@ The structure is of a virtual machine with a single accumulator
 register and a stack. There is a single entry point to the
 VM---|interpret|---called after parsed source code has been put
 into the accumulator, where the result will also be left.
@@ -72,6 +84,10 @@ into the accumulator, where the result will also be left.
 #include <string.h> /* for |memset| */
 #include <sys/types.h>
 
+@ @<API headers@>=
+#include <setjmp.h>
+#include <stdlib.h>
+
 @ The |boolean| and |predicate| {\bf \CEE/} types are used to
 distinguish between |boolean|-returning functions reporting \CEE/
 truth (0 or 1) or |predicate|-returning functions reporting \LL/
@@ -85,8 +101,12 @@ typedef int32_t cell;
 typedef int boolean;
 typedef cell predicate;
 
-@** Error Handling. When the VM has finished then again when it
-begins interpretation it establishes two jump buffers. To understand
+@** Error Handling. Everything needs to be able to report errors
+and so even though the details will make little sense without a
+more complete understanding of \LL/ the code and data to handle
+them come first in full.
+
+When the VM begins it establishes two jump buffers. To understand
 jump buffers it's necessary to understand how \CEE/'s stack works
 and we have enough stacks already.
 
@@ -105,7 +125,11 @@ The other thing that you don't need to know is that sometimes \CEE/
 compilers can make the previous paragraph a tissue of lies.
 
 @d ERR_UNIMPLEMENTED "unimplemented"
+@d error(x,d) handle_error((x), NIL, (d))
+@d ex_id car
+@d ex_detail cdr
 @<Global var...@>=
+volatile boolean Error_Handler = bfalse;
 jmp_buf Goto_Begin;
 jmp_buf Goto_Error;
 
@@ -113,37 +137,22 @@ jmp_buf Goto_Error;
 void handle_error (char *, cell, cell) __dead;
 void warn (char *, cell);
 
-@ When the initialisation has finished \LL/ sets the |Goto_Begin|
-jump buffer to return to when all else fails.
+@ @<API dec...@>=
+extern volatile boolean Error_Handler;
+extern jmp_buf Goto_Begin;
+extern jmp_buf Goto_Error;
+void handle_error (char *, cell, cell) __dead;
+void warn (char *, cell);
 
-@<Initialise error handling@>=
-setjmp(Goto_Begin);
-Env = Root;
-rts_reset();
+@ Raised errors may either be a \CEE/-`string'\footnote{$^1$}{\CEE/
+does not have strings, it has pointers to memory buffers that
+probably contain ASCII and might also happen to have a |NULL| in
+them somewhere.} when raised by an internal process or a |symbol|
+when raised at run-time.
 
-@ To support user error handling a second jump buffer |Goto_Error|
-is established immediately after {\it beginning} run-time computation.
-Because there is no support yet for exceptions this ``handler''
-will never be entered---it exists here as a placeholder and
-demonstration of how \CEE/ will handle them when \LL/ does.
+If an error handler has been established then the |id| and |detail|
+are promoted to an |exception| object and the handler entered.
 
-@<Set up run-time error handling@>=
-if (setjmp(Goto_Error)) {
-        Ip = -1; /* call the handler, wherever that is */
-        if (Ip < 0)
-                longjmp(Goto_Begin, 1);
-}
-
-@ When an error occurs if a handler has been established (how?)
-then control passes immediately there, never to return. Otherwise
-the error is displayed and control returns to the beginning.
-
-Raised errors may either be a \CEE/-`string'\footnote{$^1$}{\CEE/ does not
-have strings, it has pointers to memory buffers that probably contain
-ASCII and might also happen to have a |NULL| in them somewhere.} when raised
-by an internal process or a |symbol| when raised at run-time.
-
-@d error(x,d) handle_error((x), NIL, (d))
 @c
 void
 handle_error(char *message,
@@ -157,7 +166,8 @@ handle_error(char *message,
                 len = symbol_length(id);
         } else
                 len = strlen(message);
-        if (0) { /* handled */
+        if (Error_Handler) {
+                /* TODO: Save |Acc| or rely on |id| being it? */
                 vms_push(detail);
                 if (null_p(id))
                         id = sym(message);
@@ -176,7 +186,9 @@ handle_error(char *message,
 }
 
 @ Run-time errors are raised by the |OP_ERROR| opcode which passes
-control to |handle_error| (and never returns).
+control to |handle_error| (and never returns). The code which
+compiles |error| to emit this opcode comes later after the compiler
+has been defined.
 
 @<Opcode implementations@>=
 case OP_ERROR:@/
@@ -957,6 +969,9 @@ int   Symbol_Poolsize = 0;
 @ @<Function dec...@>=
 cell symbol (char *, int);
 
+@ @<API dec...@>=
+cell symbol (char *, int);
+
 @ @c
 void
 symbol_expand (void)
@@ -1483,39 +1498,80 @@ int     Ip        = 0;
 snippets built into the |@<Global init...@>| section then constructing
 the the root |environment| in |Root|.
 
-The very last thing initialisation does is establish fatal error
-handling errors raised between initialisation and when execution
-can begin are dealt with cleanly.
+Initialisation is divided into two phases. The first in |vm_init|
+sets up emergency jump points (which should never be reached) for
+errors which occur during initialisation or before the second phase.
 
-@<Initialise Virtual Machine@>=
-cell t;
-int i;
-primitive *n;
-@<Pre-initialise |Small_Int|@>@;
-@<Global init...@>@;
-Prog_Main = compile_main();
-i = 0;
-Root = atom(NIL, NIL, FORMAT_ENVIRONMENT);
-for (n = COMPILER + i; n->fn != NULL; n = COMPILER + (++i)) {
-        t = atom(i, NIL, FORMAT_COMPILER);
-        t = cons(t, NIL);
-        t = cons(sym(n->name), t);
-        env_layer(Root) = cons(t, env_layer(Root));
-}
-Env = Root;
-if (setjmp(Goto_Begin) || setjmp(Goto_Error)) {
-        printf("FATAL ERROR\n");
-        return EXIT_FAILURE;
-}
+The second phase establishes a jump buffer in |Goto_Begin| to support
+run-time errors that were not handled. It resets VM state which
+will not have had a chance to recover normally due to the computation
+aborting early.
 
-@ To complete initialisation |vm_clear| is called to ready the VM
-for running another program. |vm_clear| does {\bf not} reset |Env|
-(or |Acc|), which is what allows state to be maintained between
-instructions in the \.{REPL}, for example.
+The error handler's jump buffer |Goto_Error| on the other hand is
+established by |interpret| and does {\it not} reset any VM state,
+but does return to the previous jump buffer if the handler fails.
 
-@c
+@d vm_init() do {
+        if (setjmp(Goto_Begin)) {
+                Acc = sym("ABORT");
+                return EXIT_FAILURE;
+        }
+        if (setjmp(Goto_Error)) {
+                return EXIT_FAILURE;
+        }
+        vm_init_imp();
+} while (0)
+@d vm_prepare() do {
+        setjmp(Goto_Begin);
+        vm_prepare_imp();
+} while (0)
+@d vm_runtime() do {
+        if (setjmp(Goto_Error)) {
+                Ip = -1; /* TODO: call the handler */
+                if (Ip < 0)
+                        longjmp(Goto_Begin, 1);
+        }
+} while (0)
+@<API dec...@>=
+extern boolean Interrupt;
+extern cell Acc;
+void vm_init_imp (void);
+void vm_prepare_imp (void);
+void vm_reset (void);
+
+@ @c
 void
-vm_clear (void)
+vm_init_imp (void)
+{
+        cell t;
+        int i;
+        primitive *n;
+        @<Pre-initialise |Small_Int|@>@;
+        @<Global init...@>@;
+        Prog_Main = compile_main();
+        i = 0;
+        Root = atom(NIL, NIL, FORMAT_ENVIRONMENT);
+        for (n = COMPILER + i; n->fn != NULL; n = COMPILER + (++i)) {
+                t = atom(i, NIL, FORMAT_COMPILER);
+                t = cons(t, NIL);
+                t = cons(sym(n->name), t);
+                env_layer(Root) = cons(t, env_layer(Root));
+        }
+        Env = Root;
+}
+
+@ @c
+void
+vm_prepare_imp (void)
+{
+        Acc = Prog = NIL;
+        Env = Root;
+        rts_reset();
+}
+
+@ @c
+void
+vm_reset (void)
 {
         Prog = Prog_Main;
         Running = Interrupt = Ip = 0;
@@ -1614,10 +1670,14 @@ frame_consume (void)
 }
 
 @* Interpreter. The workhorse of the virtual machine is |interpret|.
-After being reset with |vm_clear|, parsed (but not compiled) source
+After being reset with |vm_reset|, parsed (but not compiled) source
 code is put into |Acc| and the VM can be started by calling
 |interpret|.
 
+@<API dec...@>=
+void interpret (void);
+
+@
 @d ERR_INTERRUPTED "interrupted"
 @c
 void
@@ -1625,7 +1685,7 @@ interpret (void)
 {
         int ins;
         cell tmp; /* {\bf not} saved in |ROOTS| */
-        @<Set up run-time...@>@;
+        vm_runtime();
         Running = 1;
         while (Running && !Interrupt) {
                 ins = int_value(vector_ref(Prog, Ip));
@@ -1688,7 +1748,10 @@ reader can be directed to ``read'' from a \CEE/-strings if
 @d SYNTAX_QUASI    "quasiquote"       /* \qquasi/ */
 @d SYNTAX_UNQUOTE  "unquote"          /* \qunquote/ */
 @d SYNTAX_UNSPLICE "unquote-splicing" /* \qunsplice/ */
-@<Global var...@>=
+@<API dec...@>=
+cell read_form (void);
+
+@ @<Global var...@>=
 char Putback[2] = { '\0', '\0' };
 int Read_Level = 0;
 char *Read_Pointer = NULL;
@@ -2178,6 +2241,9 @@ to |stdout|.
 
 @d WRITER_MAX_DEPTH 1024 /* gotta pick something */
 @<Function dec...@>=
+void write_form (cell, int);
+
+@ @<API dec...@>=
 void write_form (cell, int);
 
 @*1 Opaque Objects. |applicative|s, |compiler|s and |operative|s
@@ -3867,7 +3933,7 @@ emitop(OP_POP);
 
 @** Testing. A comprehensive test suite is planned for \LL/ but a
 testing tool would be no good if it wasn't itself reliable. During
-the build process a second binary is produced with additional
+the build process test binaries are produced with additional
 functionality exposing internal data structures and processes
 necessary to test the compiled \LL/ executable.
 
@@ -3880,58 +3946,39 @@ this source code by drowning it in preprocessor directives.
 @d test_copy_env() Env
 @d test_compare_env(o) ((o) == Env)
 @d test_is_env(o,e) ((o) == (e))
-@<Function dec...@>=
-#ifdef LL_TEST
-int test_main (int, char **);
-@#
-void test_compile (void);
-void test_integrate_eval (void);
-void test_integrate_if (void);
-void test_integrate_lambda (void);
-void test_integrate_pair (void);
-void test_integrate_vov (void);
-void test_unit_stacks (void);
-void test_vm_state (char *, int);
-char *test_vmsgf (char *, char *, char *, ...);
-#endif
+@<Test executable wrapper@>=
+#define LL_TEST 1
+#include "lossless.c"
+void test_main (void);
+
+int
+main (int    argc,
+      char **argv __unused)
+{
+        volatile boolean first = btrue;
+        vm_init();
+        if (argc > 1)
+                error(ERR_ARITY_EXTRA, NIL);
+        vm_prepare();
+        if (!first) {
+                printf("Bail out! Unhandled exception in test\n");
+                return EXIT_FAILURE;
+        }
+        first = bfalse;
+        test_main();
+        tap_plan(0);
+        return EXIT_SUCCESS;
+}
 
 @ Tests need to be able to save data from the maw of the garbage
 collector.
 
 @<Global var...@>=
 cell Tmp_Test = NIL;
-volatile boolean Testing_Exceptions = bfalse;
 
 @ @<Protected...@>=
 #ifdef LL_TEST
         &Tmp_Test,
-#endif
-
-@ @c
-#ifdef LL_TEST
-int
-main (int    argc,
-      char **argv)
-{
-        @<Initialise Virt...@>@;
-        if (argc > 3)
-                error(ERR_ARITY_EXTRA, NIL);
-        else if (argc == 1)
-                return test_main(0, NULL);
-        else if (argv[1][1] != '\0')
-                error(ERR_ARITY_SYNTAX, NIL);
-        else {
-                volatile boolean first = btrue;
-                @<Initialise error...@>@;
-                if (Testing_Exceptions)
-                        goto Test_Runtime_Exception; /* defined later */
-                if (!first)
-                        return EXIT_FAILURE;
-                first = bfalse;
-                @<Select a testing entry-point@>
-        }
-        return Test_Passing ? EXIT_SUCCESS : EXIT_FAILURE;
-}
 #endif
 
 @ Some tests need to examine a snapshot of the interpreter's run-time
@@ -4179,47 +4226,16 @@ none.
 {\bf TODO:} Add a banner and run-time detection to make it clear
 the testing environment is not for production use.
 
-@<Select a test...@>=
-switch(argv[1][0]) {
-case '0':
-        test_compile();@+
-        break; /* zero */
-case 'a':
-        test_integrate_lambda();@+
-        break;
-case 'e':
-        test_integrate_eval();@+
-        break;
-case 'i':
-        test_integrate_if();@+
-        break;
-case 'o':
-        test_integrate_vov();@+
-        break;
-case 'u':
-        @<Select a unit test@>@;@+
-        break;
-case 'p':
-        test_integrate_pair();@+
-        break;
-case 'x':
-        @<Test run-time exceptions@>@;@+
-        break;
-default:
-        error(ERR_UNEXPECTED, NIL);@+
-        break;
-}
-tap_plan(0);
-
 @* Sanity Test. This seemingly pointless test achieves two goals:
 the test harness can run it first and can abort the entire test
 suite if it fails, and it provides a simple demonstration of how
 individual test scripts interact with the outside world, without
 obscuring it with any actual testing.
 
-@c
+@(t/sanity.c@>=
+@<Test exec...@>@;
 void
-test_compile (void)
+test_main (void)
 {
         tap_plan(1);
         tap_pass("LossLess compiles and runs");
@@ -4281,9 +4297,10 @@ Starting with |pair|s tests that |cons|, |car|, |cdr|, {\it null?},
 and don't do anything strange. This code is extremely boring and
 repetetive.
 
-@c
+@(t/pair.c@>=
+@<Test exec...@>@;
 void
-test_integrate_pair (void)
+test_main (void)
 {
         boolean ok, okok;
         cell marco, polo, t, water; /* |t| is {\it not} saved from destruction */
@@ -4308,7 +4325,7 @@ and then test that the result is correct and that internal state
 is (not) changed as expected.
 
 @<Test integrating cons@>=
-vm_clear();
+vm_reset();
 Acc = read_cstring(prefix = "(cons 24 42)");
 interpret();
 ok = tap_ok(pair_p(Acc), tmsgf("pair?"));
@@ -4319,7 +4336,7 @@ tap_again(ok, integer_p(car(Acc)) && int_value(cdr(Acc)) == 42,
 test_vm_state_full(prefix);
 
 @ @<Test integrating car@>=
-vm_clear();
+vm_reset();
 t = cons(int_new(42), polo);
 t = cons(synquote_new(t), NIL);
 Tmp_Test = Acc = cons(sym("car"), t);
@@ -4329,7 +4346,7 @@ tap_ok(integer_p(Acc) && int_value(Acc) == 42, tmsgf("integer?"));
 test_vm_state_full(prefix);
 
 @ @<Test integrating cdr@>=
-vm_clear();
+vm_reset();
 Acc = cons(sym("cdr"), t);
 prefix = "(cdr '(42 . polo))";
 interpret();
@@ -4337,7 +4354,7 @@ tap_ok(symbol_p(Acc) && Acc == polo, tmsgf("symbol?"));
 test_vm_state_full(prefix);
 
 @ @<Test integrating null?@>=
-vm_clear();
+vm_reset();
 t = cons(NIL, NIL);
 Acc = cons(sym("null?"), t);
 prefix = "(null? ())";
@@ -4346,7 +4363,7 @@ tap_ok(true_p(Acc), tmsgf("true?"));
 test_vm_state_full(prefix);
 
 @ @<Test integrating null?@>=
-vm_clear();
+vm_reset();
 t = cons(synquote_new(polo), NIL);
 Acc = cons(sym("null?"), t);
 prefix = "(null? 'polo!)";
@@ -4355,7 +4372,7 @@ tap_ok(false_p(Acc), tmsgf("false?"));
 test_vm_state_full(prefix);
 
 @ @<Test integrating null?@>=
-vm_clear();
+vm_reset();
 t = synquote_new(cons(NIL, NIL));
 Acc = cons(sym("null?"), cons(t, NIL));
 prefix = "(null? '(()))";
@@ -4364,7 +4381,7 @@ tap_ok(false_p(Acc), tmsgf("false?"));
 test_vm_state_full(prefix);
 
 @ @<Test integrating pair?@>=
-vm_clear();
+vm_reset();
 Acc = cons(sym("pair?"), cons(NIL, NIL));
 prefix = "(pair? ())";
 interpret();
@@ -4372,7 +4389,7 @@ tap_ok(false_p(Acc), tmsgf("false?"));
 test_vm_state_full(prefix);
 
 @ @<Test integrating pair?@>=
-vm_clear();
+vm_reset();
 t = cons(synquote_new(polo), NIL);
 Acc = cons(sym("pair?"), t);
 prefix = "(pair? 'polo!)";
@@ -4381,7 +4398,7 @@ tap_ok(false_p(Acc), tmsgf("false?"));
 test_vm_state_full(prefix);
 
 @ @<Test integrating pair?@>=
-vm_clear();
+vm_reset();
 t = synquote_new(cons(NIL, NIL));
 Acc = cons(sym("pair?"), cons(t, NIL));
 prefix = "(pair? '(()))";
@@ -4397,7 +4414,7 @@ and avoid looking for its value in an |environment|.
 {\bf TODO:} duplicate these tests for symbols that are looked up.
 
 @<Test integrating set-car!@>=
-vm_clear();
+vm_reset();
 Tmp_Test = cons(marco, water);
 t = cons(synquote_new(polo), NIL);
 t = cons(synquote_new(Tmp_Test), t);
@@ -4412,7 +4429,7 @@ tap_again(okok, symbol_p(cdr(Tmp_Test)) && cdr(Tmp_Test) == water,
           tmsgf("(eq? (cdr T) '|fish out of water!|)"));
 
 @ @<Test integrating set-cdr!@>=
-vm_clear();
+vm_reset();
 Tmp_Test = cons(water, marco);
 t = cons(synquote_new(polo), NIL);
 t = cons(synquote_new(Tmp_Test), t);
@@ -4437,10 +4454,10 @@ compile-time environment in which the |eval| is located, and that
 the program which the first argument evaluates to is itself evaluated
 in the environment the second argument evaluates to.
 
-@c
+@(t/eval.c@>=
+@<Test exec...@>@;
 void
-test_integrate_eval (void)
-{
+test_main (void) {
         cell t, m, p;
         char *prefix;
         char msg[TEST_BUFSIZE] = {0};
@@ -4453,7 +4470,7 @@ test!probe} and its result is examined. First evaluating in the
 current environment which is here |Root|.
 
 @<Test integrating |eval|@>=
-vm_clear();
+vm_reset();
 Acc = read_cstring((prefix = "(eval '(test!probe))"));
 interpret();
 t = assoc_value(Acc, sym("Env"));
@@ -4470,7 +4487,7 @@ The probing symbol is given a different name to shield against it
 being found in |Root| and fooling the tests into passing.
 
 @<Test integrating |eval|@>=
-vm_clear();
+vm_reset();
 Tmp_Test = env_empty();
 env_set(Tmp_Test, sym("alt-test!probe"),
         env_search(Root, sym("test!probe")), TRUE);
@@ -4516,7 +4533,7 @@ putting it in |Env| before calling |interpret|, mimicking what
 represents.
 
 @<Test integrating |eval|@>=
-vm_clear();
+vm_reset();
 prefix = "(eval testing-program testing-environment)";
 Acc = read_cstring(prefix);
 Env = Tmp_Test;
@@ -4558,7 +4575,7 @@ while (!null_p(t)) {                                          \
 }
 void test_integrate_eval_unchanged (char *, cell, cell);
 
-@ @c
+@ @(t/eval.c@>=
 void
 test_integrate_eval_unchanged (char *prefix,
                                cell  outer,
@@ -4611,9 +4628,10 @@ the way that's expected of it, namely that when only the conequent
 is provided without an alternate it is as though the alternate was
 the value |VOID|, and that a call to it has no unexpected side-effects.
 
-@c
+@(t/if.c@>=
+@<Test exec...@>@;
 void
-test_integrate_if (void)
+test_main (void)
 {
         cell fcorrect, tcorrect, fwrong, twrong;
         cell talt, tcons, tq;
@@ -4639,7 +4657,7 @@ are the only tests of the 2-argument form of |if|.
 {\tt (if \#t 'polo!)} $\Rightarrow$ {\tt polo!}:
 
 @<Sanity test |if|...@>=
-vm_clear();
+vm_reset();
 t = cons(synquote_new(polo), NIL);
 t = cons(TRUE, t);
 Acc = cons(sym("if"), t);
@@ -4651,7 +4669,7 @@ test_vm_state_full(prefix);
 @ {\tt (if \#f 'marco?)} $\Rightarrow$ |VOID|:
 
 @<Sanity test |if|...@>=
-vm_clear();
+vm_reset();
 t = cons(synquote_new(marco), NIL);
 t = cons(FALSE, t);
 Acc = cons(sym("if"), t);
@@ -4663,7 +4681,7 @@ test_vm_state_full(prefix);
 @ {\tt (if \#t 'marco? 'polo!)} $\Rightarrow$ {\tt marco?}:
 
 @<Sanity test |if|...@>=
-vm_clear();
+vm_reset();
 t = cons(synquote_new(polo), NIL);
 t = cons(synquote_new(marco), t);
 t = cons(TRUE, t);
@@ -4676,7 +4694,7 @@ test_vm_state_full(prefix);
 @ {\tt (if \#f 'marco? 'polo!)} $\Rightarrow$ {\tt polo!}:
 
 @<Sanity test |if|...@>=
-vm_clear();
+vm_reset();
 t = cons(synquote_new(polo), NIL);
 t = cons(synquote_new(marco), t);
 t = cons(FALSE, t);
@@ -4712,7 +4730,7 @@ env_set(Env, tq, VOID, btrue);
 \AM\ {\tt \#t}.
 
 @<Test integrating |if|@>=
-vm_clear();
+vm_reset();
 env_set(Env, tq, FALSE, bfalse);
 t = cons(talt, NIL);
 t = cons(tcons, t);
@@ -4726,7 +4744,7 @@ test_vm_state_normal(prefix);
 tap_ok(Env == t, tmsgf("(unchanged? Env)"));
 
 @ @<Test integrating |if|@>=
-vm_clear();
+vm_reset();
 env_set(Env, tq, TRUE, bfalse);
 t = cons(talt, NIL);
 t = cons(tcons, t);
@@ -4754,9 +4772,10 @@ testing and {\it current-environment} but a) there is no practically
 usable \LL/ language yet and b) I have a feeling I may want to write
 deeper individual tests.
 
-@ @c
+@(t/lambda.c@>=
+@<Test exec...@>@;
 void
-test_integrate_lambda (void)
+test_main (void)
 {
         boolean ok;
         cell ie, oe, len;
@@ -4791,7 +4810,7 @@ Env = env_extend(Root);
 Tmp_Test = test_copy_env();
 Acc = read_cstring(TEST_AB);
 prefix = TEST_AB_PRINT;
-vm_clear();
+vm_reset();
 interpret();
 @#
 ok = tap_ok(applicative_p(Acc), tmsgf("applicative?"));
@@ -4815,7 +4834,7 @@ when leaving the closure).
 Env = env_extend(Root);
 Tmp_Test = cons(test_copy_env(), NIL);
 Acc = read_cstring(TEST_AC);
-vm_clear();
+vm_reset();
 interpret();
 @#
 Env = env_extend(Root);
@@ -4824,7 +4843,7 @@ t = read_cstring("(LAMBDA)");
 car(t) = Acc;
 Acc = t;
 prefix = TEST_AC_PRINT;
-vm_clear();
+vm_reset();
 interpret();
 @#
 t = assoc_value(Acc, sym("Env"));
@@ -4856,7 +4875,7 @@ to {\it E}$_3$.
 Env = env_extend(Root); /* {\it E}$_2$ */
 Tmp_Test = cons(test_copy_env(), NIL);
 Acc = read_cstring(TEST_ACA_INNER);
-vm_clear();
+vm_reset();
 interpret();
 @#
 vms_push(Acc);
@@ -4865,7 +4884,7 @@ cdr(Tmp_Test) = test_copy_env();
 Acc = read_cstring(TEST_ACA);
 cadr(Acc) = vms_pop();
 prefix = TEST_ACA_PRINT;
-vm_clear();
+vm_reset();
 interpret();
 @#
 t = assoc_value(Acc, sym("Env")); /* {\it E}$_3$ */
@@ -4900,7 +4919,7 @@ in {\it vov/environment}.
 Env = env_extend(Root); /* {\it E}$_2$ */
 Tmp_Test = cons(test_copy_env(), NIL);
 Acc = read_cstring(TEST_ACO_INNER);
-vm_clear();
+vm_reset();
 interpret();
 @#
 vms_push(Acc);
@@ -4909,7 +4928,7 @@ cdr(Tmp_Test) = test_copy_env();
 Acc = read_cstring(TEST_ACO);
 cadr(Acc) = vms_pop();
 prefix = TEST_ACO_PRINT;
-vm_clear();
+vm_reset();
 interpret();
 @#
 t = assoc_value(Acc, sym("Env")); /* {\it E}$_3$ */
@@ -4955,7 +4974,7 @@ closure. {\it E}$_1$ should be an extension of the run-time
 Env = env_extend(Root); /* {\it E}$_0$ */
 Tmp_Test = cons(test_copy_env(), NIL);
 Acc = read_cstring(TEST_ARA_BUILD);
-vm_clear();
+vm_reset();
 interpret();
 @#
 vms_push(Acc);
@@ -4964,7 +4983,7 @@ cdr(Tmp_Test) = test_copy_env();
 Acc = read_cstring(TEST_ARA_CALL);
 caar(Acc) = vms_pop();
 prefix = TEST_ARA_PRINT;
-vm_clear();
+vm_reset();
 interpret();
 @#
 ie = assoc_value(Acc, sym("Env")); /* {\it E}$_2$ */
@@ -5000,7 +5019,7 @@ environment, is passed in {\it vov/environment}.
 Env = env_extend(Root); /* {\it E}$_0$ */
 Tmp_Test = cons(test_copy_env(), NIL);
 Acc = read_cstring(TEST_ARO_BUILD);
-vm_clear();
+vm_reset();
 interpret();
 @#
 vms_push(Acc);
@@ -5009,7 +5028,7 @@ cdr(Tmp_Test) = test_copy_env();
 Acc = read_cstring(TEST_ARO_CALL);
 caar(Acc) = vms_pop();
 prefix = TEST_ARO_PRINT;
-vm_clear();
+vm_reset();
 interpret();
 @#
 ie = assoc_value(Acc, sym("Env")); /* {\it E}$_2$ */
@@ -5043,9 +5062,10 @@ the obvious changes to which environment is expected to be found
 where and care taken to ensure that arguments are evaluated when
 appropriate.
 
-@ @c
+@(t/vov.c@>=
+@<Test exec...@>@;
 void
-test_integrate_vov (void)
+test_main (void)
 {
         boolean ok;
         cell t, m, p;
@@ -5075,7 +5095,7 @@ Env = env_extend(Root);
 Tmp_Test = test_copy_env();
 Acc = read_cstring(TEST_OB);
 prefix = TEST_OB_PRINT;
-vm_clear();
+vm_reset();
 interpret();
 @#
 ok = tap_ok(operative_p(Acc), tmsgf("operative?"));
@@ -5108,7 +5128,7 @@ are restored unchanged.
 Env = env_extend(Root); /* {\it E}$_0$ */
 Tmp_Test = cons(test_copy_env(), NIL);
 Acc = read_cstring(TEST_OC);
-vm_clear();
+vm_reset();
 interpret();
 @#
 Env = env_extend(Root); /* {\it E}$_2$ */
@@ -5117,7 +5137,7 @@ t = read_cstring("(VOV)");
 car(t) = Acc;
 Acc = t;
 prefix = TEST_OC_PRINT;
-vm_clear();
+vm_reset();
 interpret();
 @#
 t = assoc_value(Acc, sym("Env")); /* {\it E}$_1$ */
@@ -5157,7 +5177,7 @@ passed to the operative.
 Env = env_extend(Root); /* {\it E}$_0$ */
 Tmp_Test = cons(test_copy_env(), NIL);
 Acc = read_cstring(TEST_OCA_INNER);
-vm_clear();
+vm_reset();
 interpret();
 @#
 vms_push(Acc);
@@ -5166,7 +5186,7 @@ cdr(Tmp_Test) = test_copy_env();
 Acc = read_cstring(TEST_OCA);
 cadr(Acc) = vms_pop();
 prefix = TEST_OCA_PRINT;
-vm_clear();
+vm_reset();
 interpret();
 @#
 t = assoc_value(cdr(Acc), sym("Env")); /* {\it E}$_1$ */
@@ -5207,7 +5227,7 @@ inner operative.
 Env = env_extend(Root); /* {\it E}$_0$ */
 Tmp_Test = cons(test_copy_env(), NIL);
 Acc = read_cstring(TEST_OCO_INNER);
-vm_clear();
+vm_reset();
 interpret();
 @#
 vms_push(Acc);
@@ -5216,7 +5236,7 @@ cdr(Tmp_Test) = test_copy_env();
 Acc = read_cstring(TEST_OCO);
 cadr(Acc) = vms_pop();
 prefix = TEST_OCO_PRINT;
-vm_clear();
+vm_reset();
 interpret();
 @#
 t = assoc_value(car(Acc), sym("Env")); /* {\it E}$_2$ */
@@ -5267,7 +5287,7 @@ and then calls |lambda|.
 Env = env_extend(Root); /* {\it E}$_0$ */
 Tmp_Test = cons(test_copy_env(), NIL);
 Acc = read_cstring(TEST_ORA_BUILD);
-vm_clear();
+vm_reset();
 interpret();
 @#
 vms_push(Acc);
@@ -5276,7 +5296,7 @@ cdr(Tmp_Test) = test_copy_env();
 Acc = read_cstring(TEST_ORA_CALL);
 caar(Acc) = vms_pop();
 prefix = TEST_ORA_PRINT;
-vm_clear();
+vm_reset();
 interpret();
 @#
 t = assoc_value(Acc, sym("Env")); /* {\it E}$_2$ */
@@ -5327,7 +5347,7 @@ to the each operative.
 Env = env_extend(Root); /* {\it E}$_0$ */
 Tmp_Test = cons(test_copy_env(), NIL);
 Acc = read_cstring(TEST_ORO_BUILD);
-vm_clear();
+vm_reset();
 interpret();
 @#
 vms_push(Acc);
@@ -5336,7 +5356,7 @@ cdr(Tmp_Test) = test_copy_env();
 Acc = read_cstring(TEST_ORO_CALL);
 caar(Acc) = vms_pop();
 prefix = TEST_ORO_PRINT;
-vm_clear();
+vm_reset();
 interpret();
 @#
 t = assoc_value(Acc, sym("Env")); /* {\it E}$_2$ */
@@ -5359,7 +5379,7 @@ tap_ok(test_compare_env(cdr(Tmp_Test)), tmsgf("(unchanged? Env)"));
 @* Exceptions. When an error occurs at run-time it has the option
 (unimplemented) to be handled at run-time but if it isn't then
 control returns to before the beginning of the main loop. Each time
-around the main loop, |interpret| begins by calling |vm_clear| but
+around the main loop, |interpret| begins by calling |vm_reset| but
 that explicitely {\it doesn't} change the |environment| to allow
 for run-time mutation and expects that well-behaved code will clear
 the stack correctly.
@@ -5368,24 +5388,35 @@ These exception tests enter a closure, which creates a stack frame,
 and call |error| within it. The tests then ensure that the |environment|
 and stack are ready to compute again.
 
+There is no actual support for exception handlers so the interpreter
+will halt and jump back |Goto_Begin|.
+
 @d GOTO_FAIL "((lambda x (error fail)))"
-@<Test run-time ex...@>=
-Testing_Exceptions = btrue;
-vm_clear();
-Acc = read_cstring(GOTO_FAIL);
-printf("# This unhandled error is, in fact, handled:\n# ");
-interpret();
-printf("?\n");
-tap_fail("(error fail) causes an unhandled run-time exception");
-break;
-@#
-Test_Runtime_Exception:
+@(t/exception.c@>=
+@<Test exec...@>@;
+void
+test_main (void)
+{
+        volatile boolean first = btrue;
+        volatile boolean failed = bfalse; /* WARNING: ERROR: SUCCESS */
+        boolean ok;
+
+        Error_Handler = btrue;
+        vm_prepare();
+        if (first) {
+                first = bfalse;
+                vm_reset();
+                Acc = read_cstring(GOTO_FAIL);
+                interpret();
+        } else
+                failed = btrue;
+        ok = tap_ok(failed, "an error is raised");
         test_vm_state(GOTO_FAIL,
                 TEST_VMSTATE_RUNNING
                 | TEST_VMSTATE_NOT_INTERRUPTED
                 | TEST_VMSTATE_ENV_ROOT
                 | TEST_VMSTATE_STACKS);
-        break;
+}
 
 @** TODO.
 
@@ -5420,25 +5451,22 @@ Test_Runtime_Exception:
 
 @* REPL. The |main| loop is a simple repl.
 
-@c
-#ifdef LL_TEST
-int
-test_main (int    argc,
-           char **argv __unused)@;
-#else
+@(repl.c@>=
+#include <stdio.h>
+#include "lossless.h"
+
 int
 main (int    argc,
       char **argv __unused)
-#endif
 {
-        if (argc) {@+
-                @<Initialise Virt...@>@+
-        } /* if |!argc|, this is really |test_main| */
-        if (argc > 1)
-                error(ERR_UNIMPLEMENTED, NIL);
-        @<Initialise error...@>@;
+        vm_init();
+        if (argc > 1) {
+                printf("usage: %s", argv[0]);
+                return EXIT_FAILURE;
+        }
+        vm_prepare();
         while (1) {
-                vm_clear();
+                vm_reset();
                 printf("> ");
                 Acc = read_form();
                 if (eof_p(Acc) || Interrupt)
