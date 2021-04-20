@@ -74,6 +74,9 @@ into the accumulator, where the result will also be left.
 |stdlib|, plus some obvious memory mangling functions from the
 \CEE/ library there's no point in duplicating.
 
+|LL_ALLOCATE| allows us to define a wrapper around |reallocarray|
+which is used to make it artificially fail during testing.
+
 @<System headers@>=
 #include <ctype.h>
 #include <limits.h>
@@ -83,6 +86,9 @@ into the accumulator, where the result will also be left.
 #include <stdlib.h>
 #include <string.h> /* for |memset| */
 #include <sys/types.h>
+#ifndef LL_ALLOCATE
+#define LL_ALLOCATE reallocarray
+#endif
 
 @ @<API headers@>=
 #include <setjmp.h>
@@ -4295,6 +4301,395 @@ test_suite_imp (test_unit *suite,
                 test_single_imp(*suite, i);
 }
 
+@*1 Heap Allocation. The first units we test are the memory allocators
+because I've already found embarrassing bugs there proving that
+even that ``obvious'' code needs manual verification. To do that
+we will need to be able to make |reallocarray| fail without actually
+exhausting the system's memory. A global counter is decremented
+each time this variant is called and returns |NULL| if it reaches
+zero.
+
+@(t/allocator.c@>=
+#define LLT_BARE_TEST 1
+#define LL_ALLOCATE fallible_reallocarray
+void * fallible_reallocarray(); /* no |size_t| yet */
+@<Test exec...@>@;
+
+int Allocate_Success = -1;
+
+void *
+fallible_reallocarray(void *ptr,
+                      size_t nmemb,
+                      size_t size)
+{
+        return Allocate_Success-- ? reallocarray(ptr, nmemb, size) : NULL;
+}
+
+@<Unit test the heap allocator@>@;
+
+test_unit llt_Grow_Pool_suite[] = {@|
+        llt_Grow_Pool__Immediate_Fail,
+        llt_Grow_Pool__Second_Fail,
+        llt_Grow_Pool__Third_Fail,
+        llt_Grow_Pool__Full_Success,
+        llt_Grow_Pool__Full_Immediate_Fail,
+        llt_Grow_Pool__Full_Second_Fail,
+        llt_Grow_Pool__Full_Third_Fail,
+        NULL@/
+};
+
+void
+test_main (void)
+{
+        printf("# The many unhandled out-of-memory errors"
+               " are expected and harmless.\n");
+        test_single(llt_Grow_Pool__Initial_Success);
+        test_suite_imp(llt_Grow_Pool_suite, 1);
+}
+
+@ This method of implementing unit tests has us pose 5 questions:
+
+\point 1. {\it What is the contract fulfilled by the code under test?}
+
+|new_cells_segment| performs 3, or 5 if each allocation is counted
+seperately, actions: Enlarge each of |CAR|, |CDR| \AM\ |TAG| in turn,
+checking for out-of-memory for each; zero-out the newly-allocated
+range of memory; update the global counters |Cells_Poolsize| \AM\
+|Cells_Segment|.
+
+There is no return value but either the heap will have been enlarged
+or one of 3 (mostly identical) errors will have been raised.
+
+\point 2. {\it What preconditions are required, and how are they
+enforced?}
+
+|Cells_Segment| describes how much the pool will grow by. If
+|Cells_Poolsize| is 0 the three pointers must be |NULL| otherwise
+they each point to an area of allocated memory |Cells_Poolsize|
+elements wide. There is no explicit enforcement.
+
+\point 3. {\it What postconditions are guaranteed?}
+
+IFF there was an allocation error for any of the 3 pools, the pointer
+under question will not have changed but those reallocated before
+it may have. |Cells_Poolsize| \AM\ |Cells_Segment| will be unchanged.
+Any newly-allocated memory should not be considered available
+
+Otherwise |CAR|, |CDR| \AM\ |TAG| will point to still-valid
+memory but possibly at the same address.
+
+The newly allocated memory will have been zerod.
+
+|Cells_Poolsize| \AM\ |Cells_Segment| will have been enlarged.
+
+|new_cells_segment| also guarantees that previously-allocated data
+will not have changed but it's safe for now to rely on |reallocarray|
+getting that right.
+
+\point 4. {\it What example inputs trigger different behaviors?}
+
+Chiefly there are two classes of inputs, whether or not |Cells_Poolsize|
+is 0, and whether allocation succeeds for each of the 3 attempts.
+
+\point 5. {\it What set of tests will trigger each behavior and validate
+each guarantee?}
+
+Eight tests, four starting from no heap and four from a heap with
+data in it. One for success and one for each potentially failed
+allocation.
+
+@<Unit test the heap...@>=
+enum lltf_Grow_Pool_result {
+        LLTF_GROW_POOL_SUCCESS,
+        LLTF_GROW_POOL_FAIL_CAR,
+        LLTF_GROW_POOL_FAIL_CDR,
+        LLTF_GROW_POOL_FAIL_TAG
+};
+
+@ The test fixture describes how to perform the test and what to
+expect out of it. |fix.expect| is an enum which identifies the
+checks to carry out after performing the test.
+
+@<Unit test the heap...@>=
+typedef struct {
+        LLTF_BASE_HEADER;
+        enum lltf_Grow_Pool_result expect;
+        int   allocations;
+        int   Poolsize;
+        int   Segment;
+        cell *CAR;
+        cell *CDR;
+        char *TAG;
+        char *heapcopy;
+        cell *save_CAR;
+        cell *save_CDR;
+        char *save_TAG;
+} lltf_Grow_Pool;
+
+@ @<Unit test the heap...@>=
+void llt_Grow_Pool_prepare (lltf_Grow_Pool *);
+void llt_Grow_Pool_destroy (lltf_Grow_Pool *);
+lltf_Grow_Pool
+llt_Grow_Pool_fix (const char *name)
+{
+        lltf_Grow_Pool fix;
+        bzero(&fix, sizeof (fix));
+        fix.name = name;
+        fix.prepare = (test_fixture_thunk) llt_Grow_Pool_prepare;
+        fix.destroy = (test_fixture_thunk) llt_Grow_Pool_destroy;
+        fix.expect = LLTF_GROW_POOL_SUCCESS;
+        fix.allocations = -1;
+        fix.Segment = HEAP_SEGMENT;
+        return fix;
+}
+
+@ This unit test relies on the VM being uninitialised so that it
+can safely switch out the heap pointers.
+
+@<Unit test the heap...@>=
+void
+llt_Grow_Pool_prepare (lltf_Grow_Pool *fix)
+{
+        if (fix->Poolsize) {
+                int cs = fix->Poolsize;
+                fix->heapcopy = reallocarray(NULL, cs,
+                        2 * sizeof (cell) + sizeof (char));
+                fix->save_CAR = (cell*) fix->heapcopy;
+                fix->save_CDR = (cell*) (fix->heapcopy + sizeof (cell) * cs);
+                fix->save_TAG = fix->heapcopy + sizeof (cell) * cs * 2;
+                bcopy(fix->CAR, fix->save_CAR, sizeof (cell) * cs);
+                bcopy(fix->CDR, fix->save_CDR, sizeof (cell) * cs);
+                bcopy(fix->TAG, fix->save_TAG, sizeof (char) * cs);
+        }
+        CAR = fix->CAR;
+        CDR = fix->CDR;
+        TAG = fix->TAG;
+        Cells_Poolsize = fix->Poolsize;
+        Cells_Segment = fix->Segment;
+}
+
+@ @<Unit test the heap...@>=
+void
+llt_Grow_Pool_destroy (lltf_Grow_Pool *fix)
+{
+        free(CAR);
+        free(CDR);
+        free(TAG);
+        free(fix->heapcopy);
+        CAR = CDR = NULL;
+        TAG = NULL;
+        Cells_Poolsize = 0;
+        Cells_Segment = HEAP_SEGMENT;
+}
+
+@ There is not much for this test to do apart from prepare state
+and call |new_cells_segment| then validate that the memory was, or
+was not, correctly reallocated.
+
+@<Unit test the heap...@>=
+boolean
+llt_Grow_Pool_exec (lltf_Grow_Pool fix)
+{
+        char msg[TEST_BUFSIZE] = {0};
+        boolean ok;
+        jmp_buf save_jmp;
+        if (fix.prepare)
+                fix.prepare((lltf_Base *) &fix);
+        Allocate_Success = fix.allocations;
+        memcpy(&save_jmp, &Goto_Begin, sizeof (jmp_buf));
+        if (!setjmp(Goto_Begin))
+                new_cells_segment();
+        Allocate_Success = -1;
+        memcpy(&Goto_Begin, &save_jmp, sizeof (jmp_buf));
+        @#
+        switch (fix.expect) {
+        case LLTF_GROW_POOL_SUCCESS:@/
+                @<Unit test allocations, validate success@>@;
+                break; /* TODO: test for bzero */
+        case LLTF_GROW_POOL_FAIL_CAR:@/
+                @<Unit test allocations, validate car failure@>@;
+                break;
+        case LLTF_GROW_POOL_FAIL_CDR:@/
+                @<Unit test allocations, validate cdr failure@>@;
+                break;
+        case LLTF_GROW_POOL_FAIL_TAG:@/
+                @<Unit test allocations, validate tag failure@>@;
+                break;
+        }
+        if (fix.destroy)
+                fix.destroy((lltf_Base *) &fix);
+        return ok;
+}
+
+@ @<Unit test allocations, validate success@>=
+ok = tap_ok(Cells_Poolsize == (fix.Poolsize + fix.Segment),
+        test_msgf(msg, fix.name, "Cells_Poolsize is increased"));
+tap_more(ok, Cells_Segment == (fix.Poolsize + fix.Segment) / 2,
+        test_msgf(msg, fix.name, "Cells_Segment is increased"));
+tap_more(ok, CAR != CDR && CAR != (cell*) TAG,
+        test_msgf(msg, fix.name, "CAR, CDR & TAG are unique"));
+tap_more(ok, CAR != NULL,
+        test_msgf(msg, fix.name, "CAR is not NULL"));
+tap_more(ok, !bcmp(CAR, fix.save_CAR, sizeof (cell) * fix.Poolsize),
+        test_msgf(msg, fix.name, "CAR heap is unchanged"));
+tap_more(ok, CDR != NULL,
+        test_msgf(msg, fix.name, "CDR is not NULL"));
+tap_more(ok, !memcmp(CDR, fix.save_CDR, sizeof (cell) * fix.Poolsize),
+        test_msgf(msg, fix.name, "CDR heap is unchanged"));
+tap_more(ok, TAG != NULL,
+        test_msgf(msg, fix.name, "TAG is not NULL"));
+tap_more(ok, !memcmp(TAG, fix.save_TAG, sizeof (char) * fix.Poolsize),
+        test_msgf(msg, fix.name, "TAG heap is unchanged"));
+
+@ @<Unit test allocations, validate car failure@>=
+ok = tap_ok(Cells_Poolsize == fix.Poolsize,
+        test_msgf(msg, fix.name, "Cells_Poolsize is not increased"));
+tap_more(ok, Cells_Segment == fix.Segment,
+        test_msgf(msg, fix.name, "Cells_Segment is not increased"));
+tap_more(ok, CAR == fix.CAR,
+        test_msgf(msg, fix.name, "CAR is unchanged"));
+tap_more(ok, CDR == fix.CDR,
+        test_msgf(msg, fix.name, "CDR is unchanged"));
+tap_more(ok, TAG == fix.TAG,
+        test_msgf(msg, fix.name, "TAG is unchanged"));
+
+@ @<Unit test allocations, validate cdr failure@>=
+ok = tap_ok(Cells_Poolsize == fix.Poolsize,
+        test_msgf(msg, fix.name, "Cells_Poolsize is not increased"));
+tap_more(ok, Cells_Segment == fix.Segment,
+        test_msgf(msg, fix.name, "Cells_Segment is not increased"));
+tap_more(ok, !memcmp(CAR, fix.save_CAR, sizeof (cell) * fix.Poolsize),
+        test_msgf(msg, fix.name, "CAR heap is unchanged"));
+tap_more(ok, CDR == fix.CDR,
+        test_msgf(msg, fix.name, "CDR is unchanged"));
+tap_more(ok, TAG == fix.TAG,
+        test_msgf(msg, fix.name, "TAG is unchanged"));
+
+@ @<Unit test allocations, validate tag failure@>=
+ok = tap_ok(Cells_Poolsize == fix.Poolsize,
+        test_msgf(msg, fix.name, "Cells_Poolsize is not increased"));
+tap_more(ok, Cells_Segment == fix.Segment,
+        test_msgf(msg, fix.name, "Cells_Segment is not increased"));
+tap_more(ok, !memcmp(CAR, fix.save_CAR, sizeof (cell) * fix.Poolsize),
+        test_msgf(msg, fix.name, "CAR heap is unchanged"));
+tap_more(ok, !memcmp(CDR, fix.save_CDR, sizeof (cell) * fix.Poolsize),
+        test_msgf(msg, fix.name, "CDR heap is unchanged"));
+tap_more(ok, TAG == fix.TAG,
+        test_msgf(msg, fix.name, "TAG is unchanged"));
+
+@ This tests that allocation is successful the first time the heap
+is ever allocated. It is the simplest test in this unit.
+
+@<Unit test the heap...@>=
+boolean
+llt_Grow_Pool__Initial_Success (void)
+{
+        lltf_Grow_Pool fix = llt_Grow_Pool_fix(__func__);
+        return llt_Grow_Pool_exec(fix);
+}
+
+@ If the very first call to |reallocarray| fails then everything
+should remain unchanged.
+
+@<Unit test the heap...@>=
+boolean
+llt_Grow_Pool__Immediate_Fail (void)
+{
+        lltf_Grow_Pool fix = llt_Grow_Pool_fix(__func__);
+        fix.expect = LLTF_GROW_POOL_FAIL_CAR;
+        fix.allocations = 0;
+        return llt_Grow_Pool_exec(fix);
+}
+
+@ @<Unit test the heap...@>=
+boolean
+llt_Grow_Pool__Second_Fail (void)
+{
+        lltf_Grow_Pool fix = llt_Grow_Pool_fix(__func__);
+        fix.expect = LLTF_GROW_POOL_FAIL_CDR;
+        fix.allocations = 1;
+        return llt_Grow_Pool_exec(fix);
+}
+
+@ @<Unit test the heap...@>=
+boolean
+llt_Grow_Pool__Third_Fail (void)
+{
+        lltf_Grow_Pool fix = llt_Grow_Pool_fix(__func__);
+        fix.expect = LLTF_GROW_POOL_FAIL_TAG;
+        fix.allocations = 2;
+        return llt_Grow_Pool_exec(fix);
+}
+
+@ Data already on the heap must be preserved exactly.
+
+@<Unit test the heap...@>=
+void
+lltf_Grow_Pool__fill(lltf_Grow_Pool *fix)
+{
+        int i;
+        fix->CAR = reallocarray(NULL, fix->Poolsize, sizeof (cell));
+        fix->CDR = reallocarray(NULL, fix->Poolsize, sizeof (cell));
+        fix->TAG = reallocarray(NULL, fix->Poolsize, sizeof (char));
+        for (i = 0; i < (fix->Poolsize * sizeof (cell)) / sizeof (int); i++)
+                *(((int *) fix->CAR) + i) = rand();
+        for (i = 0; i < (fix->Poolsize * sizeof (cell)) / sizeof (int); i++)
+                *(((int *) fix->CDR) + i) = rand();
+        for (i = 0; i < (fix->Poolsize * sizeof (char)) / sizeof (int); i++)
+                *(((int *) fix->TAG) + i) = rand();
+}
+
+@ @<Unit test the heap...@>=
+boolean
+llt_Grow_Pool__Full_Success (void)
+{
+        lltf_Grow_Pool fix = llt_Grow_Pool_fix(__func__);
+        fix.Poolsize = HEAP_SEGMENT;
+        lltf_Grow_Pool__fill(&fix);
+        return llt_Grow_Pool_exec(fix);
+}
+
+@ @<Unit test the heap...@>=
+boolean
+llt_Grow_Pool__Full_Immediate_Fail (void)
+{
+        lltf_Grow_Pool fix = llt_Grow_Pool_fix(__func__);
+        fix.expect = LLTF_GROW_POOL_FAIL_CAR;
+        fix.allocations = 0;
+        fix.Poolsize = HEAP_SEGMENT;
+        lltf_Grow_Pool__fill(&fix);
+        return llt_Grow_Pool_exec(fix);
+}
+
+@ @<Unit test the heap...@>=
+boolean
+llt_Grow_Pool__Full_Second_Fail (void)
+{
+        lltf_Grow_Pool fix = llt_Grow_Pool_fix(__func__);
+        fix.expect = LLTF_GROW_POOL_FAIL_CDR;
+        fix.allocations = 1;
+        fix.Poolsize = HEAP_SEGMENT;
+        lltf_Grow_Pool__fill(&fix);
+        return llt_Grow_Pool_exec(fix);
+}
+
+@ @<Unit test the heap...@>=
+boolean
+llt_Grow_Pool__Full_Third_Fail (void)
+{
+        lltf_Grow_Pool fix = llt_Grow_Pool_fix(__func__);
+        fix.expect = LLTF_GROW_POOL_FAIL_TAG;
+        fix.allocations = 2;
+        fix.Poolsize = HEAP_SEGMENT;
+        lltf_Grow_Pool__fill(&fix);
+        return llt_Grow_Pool_exec(fix);
+}
+
+@*1 Vector Heap.
+
+@*1 Garbage Collector.
+
+@*1 Objects.
 
 @* Pair Integration. With the basic building blocks' interactions
 tested we arrive at the critical integration between the compiler

@@ -6,6 +6,7 @@ CFLAGS+=  -Wall -Wpedantic -Wextra
 SOURCES:=       lossless.c repl.c
 OBJECTS:=       lossless.o repl.o
 TESTS:=         \
+	t/allocator.t \
 	t/eval.t \
 	t/exception.t \
 	t/if.t \
@@ -14,6 +15,7 @@ TESTS:=         \
 	t/sanity.t \
 	t/vov.t
 TEST_SOURCES:= \
+	t/allocator.c \
 	t/eval.c \
 	t/exception.c \
 	t/if.c \
