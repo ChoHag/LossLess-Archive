@@ -267,33 +267,24 @@ memory is set to zero and the segment size set to half of the total
 pool size.
 
 @d ERR_OOM "out-of-memory"
+@d enlarge_pool(p,m,t) do {
+        void *n;
+        n = LL_ALLOCATE((p), (m), sizeof (t));
+        if (!n) error(ERR_OOM, NIL);
+        (p) = n;
+} while (0)
 @c
 void
 new_cells_segment(void)
 {
-        cell *new_car, *new_cdr;
-        char *new_tag;
-        new_car = reallocarray(CAR, Cells_Poolsize + Cells_Segment,
-                sizeof (cell));
-        new_cdr = reallocarray(CAR, Cells_Poolsize + Cells_Segment,
-                sizeof (cell));
-        new_tag = reallocarray(CAR, Cells_Poolsize + Cells_Segment,
-                sizeof (char));
-        if (new_car == NULL || new_cdr == NULL || new_tag == NULL) {
-                free(new_car);
-                free(new_cdr);
-                free(new_tag);
-                error(ERR_OOM, NIL);
-        }
-        bzero(((char *) new_car) + Cells_Poolsize,
-                Cells_Segment * sizeof (cell));
-        bzero(((char *) new_cdr) + Cells_Poolsize,
-                Cells_Segment * sizeof (cell));
-        bzero(((char *) new_tag) + Cells_Poolsize,
-                Cells_Segment * sizeof (char));
-        CAR = new_car;
-        CDR = new_cdr;
-        TAG = new_tag;
+        enlarge_pool(CAR, Cells_Poolsize + Cells_Segment, cell);
+        enlarge_pool(CDR, Cells_Poolsize + Cells_Segment, cell);
+        enlarge_pool(TAG, Cells_Poolsize + Cells_Segment, char);
+
+        bzero(CAR + Cells_Poolsize, Cells_Segment * sizeof (cell));
+        bzero(CDR + Cells_Poolsize, Cells_Segment * sizeof (cell));
+        bzero(TAG + Cells_Poolsize, Cells_Segment * sizeof (char));
+
         Cells_Poolsize += Cells_Segment;
         Cells_Segment = Cells_Poolsize / 2;
 }
