@@ -440,16 +440,14 @@ void
 new_vector_segment(void)
 {
         cell *new_vector;
-        new_vector = reallocarray(VECTOR, Vectors_Poolsize + Vectors_Segment,
+        new_vector = LL_ALLOCATE(VECTOR, Vectors_Poolsize + Vectors_Segment,
                 sizeof (cell));
         if (new_vector == NULL)
                 error(ERR_OOM, NIL);
-        bzero(((char *) new_vector) + Vectors_Poolsize,
-                Vectors_Segment * sizeof (cell));
+        bzero(new_vector + Vectors_Poolsize, Vectors_Segment * sizeof (cell));
         VECTOR = new_vector;
         Vectors_Poolsize += Vectors_Segment;
         Vectors_Segment = Vectors_Poolsize / 2;
-        return;
 }
 
 @ When a |pair| holds a |vector| its tag is |FORMAT_VECTOR|,
@@ -3950,7 +3948,7 @@ this source code by drowning it in preprocessor directives.
 void test_main (void);
 
 int
-main (int    argc,
+main (int    argc __unused,
       char **argv __unused)
 {
         volatile boolean first = btrue;
@@ -3971,6 +3969,24 @@ main (int    argc,
         test_main();
         tap_plan(0);
         return EXIT_SUCCESS;
+}
+
+@ The heap tests need to operate before the VM has been initialised.
+
+@<Allocator test executable wrapper@>=
+#define LLT_BARE_TEST 1
+#define LL_ALLOCATE fallible_reallocarray
+void * fallible_reallocarray(); /* no |size_t| yet */
+@<Test exec...@>@;
+
+int Allocate_Success = -1;
+
+void *
+fallible_reallocarray(void *ptr,
+                      size_t nmemb,
+                      size_t size)
+{
+        return Allocate_Success-- ? reallocarray(ptr, nmemb, size) : NULL;
 }
 
 @ Tests need to be able to save data from the maw of the garbage
@@ -4300,21 +4316,8 @@ exhausting the system's memory. A global counter is decremented
 each time this variant is called and returns |NULL| if it reaches
 zero.
 
-@(t/allocator.c@>=
-#define LLT_BARE_TEST 1
-#define LL_ALLOCATE fallible_reallocarray
-void * fallible_reallocarray(); /* no |size_t| yet */
-@<Test exec...@>@;
-
-int Allocate_Success = -1;
-
-void *
-fallible_reallocarray(void *ptr,
-                      size_t nmemb,
-                      size_t size)
-{
-        return Allocate_Success-- ? reallocarray(ptr, nmemb, size) : NULL;
-}
+@ @(t/cell-heap.c@>=
+@<Allocator test exec...@>@;
 
 @<Unit test the heap allocator@>@;
 
@@ -4618,7 +4621,7 @@ llt_Grow_Pool__Third_Fail (void)
 void
 lltf_Grow_Pool__fill(lltf_Grow_Pool *fix)
 {
-        int i;
+        size_t i;
         fix->CAR = reallocarray(NULL, fix->Poolsize, sizeof (cell));
         fix->CDR = reallocarray(NULL, fix->Poolsize, sizeof (cell));
         fix->TAG = reallocarray(NULL, fix->Poolsize, sizeof (char));
@@ -4676,7 +4679,186 @@ llt_Grow_Pool__Full_Third_Fail (void)
         return llt_Grow_Pool_exec(fix);
 }
 
-@*1 Vector Heap.
+@*1 Vector Heap. Testing the vector's heap is the same but simpler
+because it has 1 not 3 possible error conditions so this section
+is duplicated from the previous without further explanation.
+
+@ @(t/vector-heap.c@>=
+@<Allocator test exec...@>@;
+
+@<Unit test the vector allocator@>@;
+
+test_unit llt_Grow_Vector_Pool_suite[] = {@|
+        llt_Grow_Vector_Pool__Empty_Fail,
+        llt_Grow_Vector_Pool__Full_Success,
+        llt_Grow_Vector_Pool__Full_Fail,
+        NULL@/
+};
+
+void
+test_main (void)
+{
+        printf("# The many unhandled out-of-memory errors"
+               " are expected and harmless.\n");
+        test_single(llt_Grow_Vector_Pool__Empty_Success);
+        test_suite_imp(llt_Grow_Vector_Pool_suite, 1);
+}
+
+@ @<Unit test the vector...@>=
+enum lltf_Grow_Vector_Pool_result {
+        LLTF_GROW_VECTOR_POOL_SUCCESS,
+        LLTF_GROW_VECTOR_POOL_FAIL
+};
+
+@ @<Unit test the vector...@>=
+typedef struct {
+        LLTF_BASE_HEADER;
+        enum lltf_Grow_Vector_Pool_result expect;
+        int   allocations;
+        int   Poolsize;
+        int   Segment;
+        cell *VECTOR;
+        cell *save_VECTOR;
+} lltf_Grow_Vector_Pool;
+
+@ @<Unit test the vector...@>=
+void llt_Grow_Vector_Pool_prepare (lltf_Grow_Vector_Pool *);
+void llt_Grow_Vector_Pool_destroy (lltf_Grow_Vector_Pool *);
+lltf_Grow_Vector_Pool
+llt_Grow_Vector_Pool_fix (const char *name)
+{
+        lltf_Grow_Vector_Pool fix;
+        bzero(&fix, sizeof (fix));
+        fix.name = name;
+        fix.prepare = (test_fixture_thunk) llt_Grow_Vector_Pool_prepare;
+        fix.destroy = (test_fixture_thunk) llt_Grow_Vector_Pool_destroy;
+        fix.expect = LLTF_GROW_VECTOR_POOL_SUCCESS;
+        fix.allocations = -1;
+        fix.Segment = HEAP_SEGMENT;
+        return fix;
+}
+
+@ @<Unit test the vector...@>=
+void
+llt_Grow_Vector_Pool_prepare (lltf_Grow_Vector_Pool *fix)
+{
+        if (fix->Poolsize) {
+                int cs = fix->Poolsize;
+                fix->save_VECTOR = reallocarray(NULL, cs, sizeof (cell));
+                bcopy(fix->VECTOR, fix->save_VECTOR, sizeof (cell) * cs);
+        }
+        VECTOR = fix->VECTOR;
+        Vectors_Poolsize = fix->Poolsize;
+        Vectors_Segment = fix->Segment;
+}
+
+@ @<Unit test the vector...@>=
+void
+llt_Grow_Vector_Pool_destroy (lltf_Grow_Vector_Pool *fix)
+{
+        free(VECTOR);
+        free(fix->save_VECTOR);
+        VECTOR = NULL;
+        Vectors_Poolsize = 0;
+        Vectors_Segment = HEAP_SEGMENT;
+}
+
+@ @<Unit test the vector...@>=
+boolean
+llt_Grow_Vector_Pool_exec (lltf_Grow_Vector_Pool fix)
+{
+        char msg[TEST_BUFSIZE] = {0};
+        boolean ok;
+        jmp_buf save_jmp;
+        if (fix.prepare)
+                fix.prepare((lltf_Base *) &fix);
+        Allocate_Success = fix.allocations;
+        memcpy(&save_jmp, &Goto_Begin, sizeof (jmp_buf));
+        if (!setjmp(Goto_Begin))
+                new_vector_segment();
+        Allocate_Success = -1;
+        memcpy(&Goto_Begin, &save_jmp, sizeof (jmp_buf));
+        @#
+        switch (fix.expect) {
+        case LLTF_GROW_VECTOR_POOL_SUCCESS:@/
+                @<Unit test vector allocations, validate success@>@;
+                break; /* TODO: test for bzero */
+        case LLTF_GROW_VECTOR_POOL_FAIL:@/
+                @<Unit test vector allocations, validate failure@>@;
+                break;
+        }
+        if (fix.destroy)
+                fix.destroy((lltf_Base *) &fix);
+        return ok;
+}
+
+@ @<Unit test vector allocations, validate success@>=
+ok = tap_ok(Vectors_Poolsize == (fix.Poolsize + fix.Segment),
+        test_msgf(msg, fix.name, "Vectors_Poolsize is increased"));
+tap_more(ok, Vectors_Segment == (fix.Poolsize + fix.Segment) / 2,
+        test_msgf(msg, fix.name, "Vectors_Segment is increased"));
+tap_more(ok, VECTOR != NULL,
+        test_msgf(msg, fix.name, "VECTOR is not NULL"));
+tap_more(ok, !bcmp(VECTOR, fix.save_VECTOR, sizeof (cell) * fix.Poolsize),
+        test_msgf(msg, fix.name, "VECTOR heap is unchanged"));
+
+@ @<Unit test vector allocations, validate failure@>=
+ok = tap_ok(Vectors_Poolsize == fix.Poolsize,
+        test_msgf(msg, fix.name, "Vectors_Poolsize is not increased"));
+tap_more(ok, Vectors_Segment == fix.Segment,
+        test_msgf(msg, fix.name, "Vectors_Segment is not increased"));
+tap_more(ok, VECTOR == fix.VECTOR,
+        test_msgf(msg, fix.name, "VECTOR is unchanged"));
+
+@ @<Unit test the vector...@>=
+boolean
+llt_Grow_Vector_Pool__Empty_Success (void)
+{
+        lltf_Grow_Vector_Pool fix = llt_Grow_Vector_Pool_fix(__func__);
+        return llt_Grow_Vector_Pool_exec(fix);
+}
+
+@ @<Unit test the vector...@>=
+boolean
+llt_Grow_Vector_Pool__Empty_Fail (void)
+{
+        lltf_Grow_Vector_Pool fix = llt_Grow_Vector_Pool_fix(__func__);
+        fix.expect = LLTF_GROW_VECTOR_POOL_FAIL;
+        fix.allocations = 0;
+        return llt_Grow_Vector_Pool_exec(fix);
+}
+
+@ @<Unit test the vector...@>=
+void
+lltf_Grow_Vector_Pool__fill(lltf_Grow_Vector_Pool *fix)
+{
+        size_t i;
+        fix->VECTOR = reallocarray(NULL, fix->Poolsize, sizeof (cell));
+        for (i = 0; i < (fix->Poolsize * sizeof (cell)) / sizeof (int); i++)
+                *(((int *) fix->VECTOR) + i) = rand();
+}
+
+@ @<Unit test the vector...@>=
+boolean
+llt_Grow_Vector_Pool__Full_Success (void)
+{
+        lltf_Grow_Vector_Pool fix = llt_Grow_Vector_Pool_fix(__func__);
+        fix.Poolsize = HEAP_SEGMENT;
+        lltf_Grow_Vector_Pool__fill(&fix);
+        return llt_Grow_Vector_Pool_exec(fix);
+}
+
+@ @<Unit test the vector...@>=
+boolean
+llt_Grow_Vector_Pool__Full_Fail (void)
+{
+        lltf_Grow_Vector_Pool fix = llt_Grow_Vector_Pool_fix(__func__);
+        fix.expect = LLTF_GROW_VECTOR_POOL_FAIL;
+        fix.allocations = 0;
+        fix.Poolsize = HEAP_SEGMENT;
+        lltf_Grow_Vector_Pool__fill(&fix);
+        return llt_Grow_Vector_Pool_exec(fix);
+}
 
 @*1 Garbage Collector.
 

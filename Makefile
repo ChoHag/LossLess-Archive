@@ -6,22 +6,24 @@ CFLAGS+=  -Wall -Wpedantic -Wextra
 SOURCES:=       lossless.c repl.c
 OBJECTS:=       lossless.o repl.o
 TESTS:=         \
-	t/allocator.t \
+	t/cell-heap.t \
 	t/eval.t \
 	t/exception.t \
 	t/if.t \
 	t/lambda.t \
 	t/pair.t \
 	t/sanity.t \
+	t/vector-heap.t \
 	t/vov.t
 TEST_SOURCES:= \
-	t/allocator.c \
+	t/cell-heap.c \
 	t/eval.c \
 	t/exception.c \
 	t/if.c \
 	t/lambda.c \
 	t/pair.c \
 	t/sanity.c \
+	t/vector-heap.c \
 	t/vov.c
 
 all: lossless lossless.pdf
