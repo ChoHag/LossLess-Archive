@@ -26,6 +26,16 @@ TEST_SOURCES:= \
 	t/vector-heap.c \
 	t/vov.c
 
+ALLOC_TESTS:= t/cell-heap.t t/vector-heap.t
+
+TEST_OBJECTS:= llalloc.o lltest.o
+
+OTHER_SOURCES:= \
+	lossless.h \
+	t/llalloc.c \
+	t/llt.h \
+	t/lltest.c
+
 all: lossless lossless.pdf
 
 full: test all
@@ -42,13 +52,15 @@ lossless: $(OBJECTS)
 
 $(OBJECTS): $(SOURCES)
 
-$(SOURCES) $(TEST_SOURCES): lossless.w
+$(SOURCES) $(TEST_SOURCES) $(OTHER_SOURCES): t lossless.w
 	$(CTANGLE) lossless.w
 
 test: $(TESTS)
 	prove -vr -e '' t
 
-$(TESTS): t $(TEST_SOURCES)
+$(TESTS): $(TEST_OBJECTS)
+
+$(TEST_OBJECTS): $(TEST_SOURCES) $(OTHER_SOURCES)
 
 t:
 	mkdir -p t
@@ -56,10 +68,14 @@ t:
 .SUFFIXES: .t
 
 .c.t:
-	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) -I. -o $@ $<
+	if echo " $(ALLOC_TESTS) " | grep -qF " $@ "; then                     \
+		$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) -I. llalloc.o -o $@ $<; \
+	else                                                                   \
+		$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) -I. lltest.o -o $@ $<;  \
+	fi
 
 clean:
 	rm -f core *.core *.idx *.log *.scn *.toc *.o
 	rm -f lossless *.o
 	rm -f repl.c lossless.c lossless.tex lossless.pdf
-	rm -f t/*.c t/*.o t/*.t
+	rm -fr t

@@ -42,16 +42,20 @@ After a few iterations including being briefly ported to perl this
 rather different code is the result, although at its core it follows
 the same design.
 
-\LL/ is built as a library. The header file \.{lossless.h} can be
-included to link against it, which the REPL does.
+All of the functions, variables, etc. used by \LL/ are exported via
+\.{lossless.h}, even those which are nominally internal. Although
+this is not best practice for a library it makes this document less
+repetetive and facilitates easier testing.
 
 @(lossless.h@>=
 #ifndef LOSSLESS_H
 #define LOSSLESS_H
-@<API headers@>@;
+@<System headers@>@;
 @h
+@<Complex definitions \AM\ macros@>@;
 @<Type definitions@>@;
-@<API declarations@>@;
+@<Function declarations@>@;
+@<Externalised global variables@>@;
 #endif
 
 @ The structure is of a virtual machine with a single accumulator
@@ -60,12 +64,12 @@ VM---|interpret|---called after parsed source code has been put
 into the accumulator, where the result will also be left.
 
 @c
-@<System headers@>@/
+@<System headers@>@;
 @h
-@<Global constants@>@/
-@<Type definitions@>@/
-@<Function declarations@>@/
-@<Global variables@>@/
+@<Complex definitions \AM\ macros@>@;
+@<Type definitions@>@;
+@<Function declarations@>@;
+@<Global variables@>@;
 
 @ @<Global initialisation@>=
 /* This is located here to name it in full for \.{CWEB}'s benefit */
@@ -89,10 +93,6 @@ which is used to make it artificially fail during testing.
 #ifndef LL_ALLOCATE
 #define LL_ALLOCATE reallocarray
 #endif
-
-@ @<API headers@>=
-#include <setjmp.h>
-#include <stdlib.h>
 
 @ The |boolean| and |predicate| {\bf \CEE/} types are used to
 distinguish between |boolean|-returning functions reporting \CEE/
@@ -139,14 +139,16 @@ volatile boolean Error_Handler = bfalse;
 jmp_buf Goto_Begin;
 jmp_buf Goto_Error;
 
+@ @<External...@>=
+extern volatile boolean Error_Handler;
+extern jmp_buf Goto_Begin;
+extern jmp_buf Goto_Error;
+
 @ @<Function dec...@>=
 void handle_error (char *, cell, cell) __dead;
 void warn (char *, cell);
 
-@ @<API dec...@>=
-extern volatile boolean Error_Handler;
-extern jmp_buf Goto_Begin;
-extern jmp_buf Goto_Error;
+@ @<Visible...@>=
 void handle_error (char *, cell, cell) __dead;
 void warn (char *, cell);
 
@@ -161,9 +163,9 @@ are promoted to an |exception| object and the handler entered.
 
 @c
 void
-handle_error(char *message,
-             cell  id,
-             cell  detail)
+handle_error (char *message,
+              cell  id,
+              cell  detail)
 {
         int len;
 
@@ -260,6 +262,14 @@ cell  Cells_Free = NIL;
 int   Cells_Poolsize = 0;
 int   Cells_Segment = HEAP_SEGMENT;
 
+@ @<Extern...@>=
+extern cell *CAR, *CDR, Cells_Free;
+extern char *TAG;
+extern int Cells_Poolsize, Cells_Segment;
+
+@ @<Func...@>=
+void new_cells_segment (void);
+
 @ The pool is spread across |CAR|, |CDR| and |TAG| and starts off
 with a size of zero |cell|s, growing by |Cells_Segment| |cell|s
 each time it's enlarged. When the heap is enlarged newly allocated
@@ -267,15 +277,17 @@ memory is set to zero and the segment size set to half of the total
 pool size.
 
 @d ERR_OOM "out-of-memory"
+@d ERR_OOM_P(p) do@+ {@+ if ((p) == NULL) error(ERR_OOM, NIL);@+ }@+ while (0)
+@d ERR_DOOM_P(p,d) do@+ {@+ if ((p) == NULL) error(ERR_OOM, (d));@+ }@+ while (0)
 @d enlarge_pool(p,m,t) do {
         void *n;
         n = LL_ALLOCATE((p), (m), sizeof (t));
-        if (!n) error(ERR_OOM, NIL);
+        ERR_OOM_P(n);
         (p) = n;
 } while (0)
 @c
 void
-new_cells_segment(void)
+new_cells_segment (void)
 {
         enlarge_pool(CAR, Cells_Poolsize + Cells_Segment, cell);
         enlarge_pool(CDR, Cells_Poolsize + Cells_Segment, cell);
@@ -389,6 +401,9 @@ while a new |pair| is being located.
 cell Tmp_CAR = NIL;
 cell Tmp_CDR = NIL;
 
+@ @<Extern...@>=
+extern cell Tmp_CAR, Tmp_CDR;
+
 @ @<Protect...@>=
 &Tmp_CAR, &Tmp_CDR,
 
@@ -435,15 +450,21 @@ int   Vectors_Free = 0;
 int   Vectors_Poolsize = 0;
 int   Vectors_Segment = HEAP_SEGMENT;
 
+@ @<Extern...@>=
+extern cell *VECTOR;
+extern int Vectors_Free, Vectors_Poolsize, Vectors_Segment;
+
+@ @<Func...@>=
+void new_vector_segment (void);
+
 @ @c
 void
-new_vector_segment(void)
+new_vector_segment (void)
 {
         cell *new_vector;
         new_vector = LL_ALLOCATE(VECTOR, Vectors_Poolsize + Vectors_Segment,
                 sizeof (cell));
-        if (new_vector == NULL)
-                error(ERR_OOM, NIL);
+        ERR_OOM_P(new_vector);
         bzero(new_vector + Vectors_Poolsize, Vectors_Segment * sizeof (cell));
         VECTOR = new_vector;
         Vectors_Poolsize += Vectors_Segment;
@@ -476,12 +497,21 @@ initialisation.
 @<Global var...@>=
 cell Zero_Vector = NIL;
 
+@ @<Extern...@>=
+extern cell Zero_Vector;
+
 @ @<Global init...@>=
 Zero_Vector = vector_new_imp(0, 0, 0);
 
 @ Separate storage means separate garbage collection and a different
 allocator. |vector_new_imp|, again, is broadly similar to |atom|
 without the need for preallocated storage.
+
+@ @<Func...@>=
+cell vector_new (int, cell);
+cell vector_new_imp (int, int, cell);
+cell vector_new_list (cell, int);
+cell vector_sub (cell, int, int, int, int, cell);
 
 @ @c
 cell
@@ -573,22 +603,26 @@ to recursively set the mark bit on every reachable |pair|, then
 the whole pool is scanned and any |pair|s which aren't marked are
 added to the free list.
 
-% TODO: break this algorithm down into explained pieces.
-
-@<Function dec...@>=
-int gc (void);
-int gc_vectors (void);
-
-@ |ROOTS| is a |NULL|-terminated \CEE/ array of objects to protect
+|ROOTS| is a |NULL|-terminated \CEE/ array of objects to protect
 from collection. I can't think of any better way of declaring it
 but hard-coding it right here.
+
+% TODO: break this algorithm down into explained pieces.
 
 @c
 cell *ROOTS[] = { @<Protected Globals@>@t, @> NULL };
 
+@ @<Extern...@>=
+extern cell *ROOTS;
+
+@ @<Func...@>=
+int gc (void);
+int gc_vectors (void);
+void mark (cell);
+
 @ @c
 void
-mark(cell next)
+mark (cell next)
 {
         cell parent, prev;
         int i;
@@ -777,12 +811,29 @@ cell VMS = NIL;
 int  RTS_Size = 0;
 int  RTSp = -1;
 
+@ @<Extern...@>=
+extern cell CTS, RTS, VMS;
+extern int RTS_Size, RTSp;
+
 @ @<Protected...@>=
 &CTS, &RTS, &VMS,
 
-@ @<Function dec...@>=
+@ @<Func...@>=
+cell cts_pop (void);
+void cts_push (cell);
+cell cts_ref (void);
+void cts_set (cell);
+cell rts_pop (int);
+void rts_prepare (int);
+void rts_push (cell);
+cell rts_ref (int);
+cell rts_ref_abs (int);
+void rts_set (int, cell);
+void rts_set_abs (int, cell);
 cell vms_pop (void);
 void vms_push (cell);
+cell vms_ref (void);
+void vms_set (cell);
 
 @ The VM and compiler stacks |VMS| and |CTS| are built on |list|s.
 
@@ -958,14 +1009,20 @@ char *SYMBOL = NULL;
 int   Symbol_Free = 0;
 int   Symbol_Poolsize = 0;
 
+@ @<Extern...@>=
+extern cell Symbol_Table;
+extern char *SYMBOL;
+extern int Symbol_Free, Symbol_Poolsize;
+
 @ @<Protected...@>=
 &Symbol_Table,
 
-@ @<Function dec...@>=
-cell symbol (char *, int);
-
-@ @<API dec...@>=
-cell symbol (char *, int);
+@ @<Func...@>=
+cell symbol (char *, boolean);
+void symbol_expand (void);
+void symbol_reify (cell);
+boolean symbol_same_p (cell, cell);
+cell symbol_steal (char *);
 
 @ @c
 void
@@ -973,8 +1030,7 @@ symbol_expand (void)
 {
         char *new;
         new = realloc(SYMBOL, Symbol_Poolsize + HEAP_SEGMENT);
-        if (new == NULL)
-                error(ERR_OOM, NIL);
+        ERR_OOM_P(new);
         Symbol_Poolsize += HEAP_SEGMENT;
         SYMBOL = new;
 }
@@ -1032,9 +1088,10 @@ symbol_reify (cell s)
         Symbol_Table = cons(s, Symbol_Table);
 }
 
+@ @c
 cell
 symbol (char *cstr,
-        int   permanent_p)
+        boolean permanent_p)
 {
         cell st, s;
         s = symbol_steal(cstr);
@@ -1066,6 +1123,9 @@ accordingly.
 @<Global var...@>=
 cell Small_Int[UCHAR_MAX + 1];
 
+@ @<Extern...@>=
+extern cell *Small_Int;
+
 @ Even though the |Small_Int| objects are about to be created, in
 order to create objects garbage collection will happen and assume
 that |Small_Int| has already been initialised and attempt to protect
@@ -1083,7 +1143,11 @@ for (i = SCHAR_MIN; i <= SCHAR_MAX; i++)@/
 @ As with |vector|s, |int_new| checks whether it should return
 an |object| from |Small_Int| or build a new one.
 
-@c
+@<Func...@>=
+cell int_new_imp (int, cell);
+cell int_new (int);
+
+@ @c
 cell
 int_new_imp (int  value,
              cell next)
@@ -1093,6 +1157,7 @@ int_new_imp (int  value,
         return atom((cell) value, next, FORMAT_INTEGER);
 }
 
+@ @c
 cell
 int_new (int value)
 {
@@ -1111,7 +1176,12 @@ to tail. It is not considered an error if the |list| is improper
 (or not a |list| at all). To indicate this case the returned
 length is negated.
 
-@c
+@<Func...@>=
+int list_length (cell);
+predicate list_p (cell, predicate, cell *);
+cell list_reverse_m (cell, boolean);
+
+@ @c
 int
 list_length (cell l)
 {
@@ -1253,7 +1323,13 @@ This means that |UNDEFINED| is the only value which cannot be stored
 in a variable as there is no way to distinguish its return from
 this function.
 
-@c
+@<Func...@>=
+cell env_here (cell, cell);
+cell env_lift_stack (cell, int, cell);
+cell env_search (cell, cell);
+void env_set (cell, cell, cell, boolean);
+
+@ @c
 cell
 env_search (cell haystack,
             cell needle)
@@ -1330,7 +1406,6 @@ env_layer(e) = cons(ass, env_layer(e));
 moves these values from the stack into an |environment|.
 
 @c
-
 cell
 env_lift_stack (cell e,
                 int nargs,
@@ -1396,7 +1471,10 @@ $$(A\vert O\ \langle formals\rangle\ .\ \langle opaque\_closure\rangle)$$
 @d operative_formals car
 @d operative_new(f,e,p,i)
         closure_new_imp(FORMAT_OPERATIVE, (f), (e), (p), (i))
-@c
+@<Func...@>=
+cell closure_new_imp (char, cell, cell, cell, cell);
+
+@ @c
 cell
 closure_new_imp (char ntag,
                  cell formals,
@@ -1437,6 +1515,9 @@ environment filled with an association |pair| for each one.
 primitive COMPILER[] =@+ {@+
         @<List of opcode primitives@>@t,@>@+
         { NULL, NULL }@+ }@+;
+
+@ @<Extern...@>=
+extern primitive *COMPILER;
 
 @** Virtual Machine. This implementation of \LL/ compiles user
 source code to an internal bytecode representation which is then
@@ -1486,6 +1567,11 @@ cell    Prog_Main = NIL;
 cell    Root      = NIL;
 int     Ip        = 0;
 
+@ @<Extern...@>=
+extern boolean Interrupt, Running;
+extern cell Acc, Env, Prog, Prog_Main, Root;
+extern int Ip;
+
 @ @<Protected...@>=
 &Acc, &Env, &Prog, &Prog_Main, &Root,
 
@@ -1528,9 +1614,7 @@ but does return to the previous jump buffer if the handler fails.
                         longjmp(Goto_Begin, 1);
         }
 } while (0)
-@<API dec...@>=
-extern boolean Interrupt;
-extern cell Acc;
+@<Func...@>=
 void vm_init_imp (void);
 void vm_prepare_imp (void);
 void vm_reset (void);
@@ -1598,11 +1682,20 @@ saved value when returning from a |frame|.
 @<Global var...@>=
 int Fp = -1;
 
+@ @<Extern...@>=
+extern int Fp;
+
 @ Creating a |frame| is pushing the header items onto the stack.
 Entering it is changing the VM's registers that are now safe. This
 is done in two stages for some reason.
 
-@c
+@<Func...@>=
+void frame_consume (void);
+void frame_enter (cell, cell, cell);
+void frame_leave (void);
+void frame_push (int);
+
+@ @c
 void
 frame_push (int ipdelta)
 {
@@ -1612,6 +1705,7 @@ frame_push (int ipdelta)
         rts_push(int_new(Fp));
 }
 
+@ @c
 void
 frame_enter (cell e,
              cell p,
@@ -1670,7 +1764,7 @@ After being reset with |vm_reset|, parsed (but not compiled) source
 code is put into |Acc| and the VM can be started by calling
 |interpret|.
 
-@<API dec...@>=
+@<Func...@>=
 void interpret (void);
 
 @
@@ -1744,10 +1838,7 @@ reader can be directed to ``read'' from a \CEE/-strings if
 @d SYNTAX_QUASI    "quasiquote"       /* \qquasi/ */
 @d SYNTAX_UNQUOTE  "unquote"          /* \qunquote/ */
 @d SYNTAX_UNSPLICE "unquote-splicing" /* \qunsplice/ */
-@<API dec...@>=
-cell read_form (void);
-
-@ @<Global var...@>=
+@<Global var...@>=
 char Putback[2] = { '\0', '\0' };
 int Read_Level = 0;
 char *Read_Pointer = NULL;
@@ -1758,6 +1849,12 @@ cell Sym_SYNTAX_QUOTE = NIL;
 cell Sym_SYNTAX_UNQUOTE = NIL;
 cell Sym_SYNTAX_UNSPLICE = NIL;
 
+@ @<Extern...@>=
+extern char Putback[2], *Read_Pointer;
+extern int Read_Level;
+extern cell Sym_ERR_UNEXPECTED, Sym_SYNTAX_DOTTED, Sym_SYNTAX_QUASI;
+extern cell Sym_SYNTAX_QUOTE, Sym_SYNTAX_UNQUOTE, Sym_SYNTAX_UNSPLICE;
+
 @ @<Global init...@>=
 Sym_ERR_UNEXPECTED = sym(ERR_UNEXPECTED);
 Sym_SYNTAX_DOTTED = sym(SYNTAX_DOTTED);
@@ -1766,13 +1863,17 @@ Sym_SYNTAX_QUOTE = sym(SYNTAX_QUOTE);
 Sym_SYNTAX_UNQUOTE = sym(SYNTAX_UNQUOTE);
 Sym_SYNTAX_UNSPLICE = sym(SYNTAX_UNSPLICE);
 
-@ @<Function dec...@>=
-cell read_symbol (void);
+@ @<Func...@>=
+int read_byte (void);
+cell read_cstring (char *);
 cell read_form (void);
 cell read_list (cell);
 cell read_number (void);
+cell read_sexp (void);
+cell read_symbol (void);
 cell read_symbol (void);
 void unread_byte (char);
+int useful_byte (void);
 
 @ @c
 int
@@ -2156,9 +2257,7 @@ read_symbol (void)
         int c, i, s;
         c = read_byte();
         READSYM_EOF_P;
-        buf = malloc(CHUNK_SIZE);
-        if (!buf)
-                error(ERR_OOM, NIL);
+        ERR_OOM_P(buf = malloc(CHUNK_SIZE));
         s = CHUNK_SIZE;
         @<Read the first two bytes to check for a number@>@;
         while (1) { @<Read bytes until an invalid or terminating character@> }
@@ -2236,10 +2335,16 @@ to an output routine but for the time being \LL/ has no support for
 to |stdout|.
 
 @d WRITER_MAX_DEPTH 1024 /* gotta pick something */
-@<Function dec...@>=
-void write_form (cell, int);
-
-@ @<API dec...@>=
+@<Func...@>=
+boolean write_applicative(cell, int);
+boolean write_compiler(cell, int);
+boolean write_environment(cell, int);
+boolean write_integer(cell, int);
+boolean write_list(cell, int);
+boolean write_operative(cell, int);
+boolean write_symbol(cell, int);
+boolean write_syntax(cell, int);
+boolean write_vector(cell, int);
 void write_form (cell, int);
 
 @*1 Opaque Objects. |applicative|s, |compiler|s and |operative|s
@@ -2442,7 +2547,7 @@ respectively.
 
 @d skip(d) Ip += (d)
 @d fetch(d) vector_ref(Prog, Ip + (d))
-@<Global constants@>=
+@<Complex...@>=
 enum {
         OP_APPLY,
         OP_APPLY_TAIL,
@@ -2489,7 +2594,7 @@ enum {
         OPCODE_MAX
 };
 
-@ @<Global constants@>=
+@ @<Complex...@>=
 #ifndef LL_TEST
 enum {
 /* Ensure testing opcodes translate into undefined behaviour */
@@ -2802,9 +2907,15 @@ The compiler uses a small set of \CEE/ macros which grow and fill
 int Here = 0;
 cell Compilation = NIL;
 
-@ @<Function dec...@>=
+@ @<Extern...@>=
+extern int Here;
+extern cell Compilation;
+
+@ @<Func...@>=
+cell arity (cell, cell, int, boolean);
+cell arity_next (cell, cell, cell, boolean, boolean);
+int comefrom (void);
 cell compile (cell);
-cell compile_main (void);
 void compile_car (cell, cell, boolean);
 void compile_cdr (cell, cell, boolean);
 void compile_conditional (cell, cell, boolean);
@@ -2816,14 +2927,19 @@ void compile_error (cell, cell, boolean);
 void compile_eval (cell, cell, boolean);
 void compile_expression (cell, boolean);
 void compile_lambda (cell, cell, boolean);
+void compile_list (cell, cell, boolean);
+cell compile_main (void);
 void compile_null_p (cell, cell, boolean);
 void compile_pair_p (cell, cell, boolean);
+void compile_quasicompiler (cell, cell, cell, int, boolean);
 void compile_quasiquote (cell, cell, boolean);
 void compile_quote (cell, cell, boolean);
 void compile_set_car_m (cell, cell, boolean);
 void compile_set_cdr_m (cell, cell, boolean);
 void compile_set_m (cell, cell, boolean);
+void compile_symbol_p (cell, cell, boolean);
 void compile_vov (cell, cell, boolean);
+void emit (cell);
 
 @ @<Protected...@>=
 &Compilation,
@@ -3928,58 +4044,33 @@ patch(goto_finish, int_new(Here));
 emitop(OP_POP);
 
 @** Testing. A comprehensive test suite is planned for \LL/ but a
-testing tool would be no good if it wasn't itself reliable. During
-the build process test binaries are produced with additional
-functionality exposing internal data structures and processes
-necessary to test the compiled \LL/ executable.
+testing tool would be no good if it wasn't itself reliable, which
+these primarily unit tests work towards. In addition to the main
+library \.{lossless.o} two libraries with extra functionality needed
+by the tests are created: \.{t/lltest.o} and \.{t/llalloc.o} which
+additionally to extra operators wraps \.{reallocarray} to test
+memory allocation.
 
-\CEE/'s preprocessor is used to define an alternate entry-point to
-\LL/ by renaming |main| and adding testing opcodes and operators.
-Other testing functions unused by the \LL/ runtime are expected to
-be removed by the \CEE/-compiler or linker rather than obscuring
-this source code by drowning it in preprocessor directives.
+@(t/lltest.c@>=
+#define LL_TEST
+#include "../lossless.c" /* \CEE/ source */
 
-@d test_copy_env() Env
-@d test_compare_env(o) ((o) == Env)
-@d test_is_env(o,e) ((o) == (e))
-@<Test executable wrapper@>=
-#define LL_TEST 1
-#include "lossless.c"
-void test_main (void);
-
-int
-main (int    argc __unused,
-      char **argv __unused)
-{
-        volatile boolean first = btrue;
-#ifndef LLT_BARE_TEST
-        vm_init();
-        if (argc > 1)
-                error(ERR_ARITY_EXTRA, NIL);
-        vm_prepare();
-#else
-        setjmp(Goto_Begin);
-        setjmp(Goto_Error);
+@ @<Global var...@>=
+#ifdef LL_TEST
+        int Allocate_Success = -1;
 #endif
-        if (!first) {
-                printf("Bail out! Unhandled exception in test\n");
-                return EXIT_FAILURE;
-        }
-        first = bfalse;
-        test_main();
-        tap_plan(0);
-        return EXIT_SUCCESS;
-}
 
-@ The heap tests need to operate before the VM has been initialised.
+@ @<Extern...@>=
+#ifdef LL_TEST
+        extern int Allocate_Success;
+#endif
 
-@<Allocator test executable wrapper@>=
-#define LLT_BARE_TEST 1
+@ @(t/llalloc.c@>=
 #define LL_ALLOCATE fallible_reallocarray
-void * fallible_reallocarray(); /* no |size_t| yet */
-@<Test exec...@>@;
-
-int Allocate_Success = -1;
+@<System headers@>@;
+void * fallible_reallocarray (void *, size_t, size_t);
+#define LL_TEST
+#include "../lossless.c" /* \CEE/ source */
 
 void *
 fallible_reallocarray(void *ptr,
@@ -3994,6 +4085,9 @@ collector.
 
 @<Global var...@>=
 cell Tmp_Test = NIL;
+
+@ @<Extern...@>=
+extern cell Tmp_Test;
 
 @ @<Protected...@>=
 #ifdef LL_TEST
@@ -4074,6 +4168,34 @@ testing_build_probe (cell was_Acc)
 }
 #undef probe_push
 
+@
+@d test_copy_env() Env
+@d test_compare_env(o) ((o) == Env)
+@d test_is_env(o,e) ((o) == (e))
+@<Old test executable wrapper@>=
+#define LL_TEST 1
+#include "lossless.h"
+void test_main (void);
+
+int
+main (int    argc __unused,
+      char **argv __unused)
+{
+        volatile boolean first = btrue;
+        vm_init();
+        if (argc > 1)
+                error(ERR_ARITY_EXTRA, NIL);
+        vm_prepare();
+        if (!first) {
+                printf("Bail out! Unhandled exception in test\n");
+                return EXIT_FAILURE;
+        }
+        first = bfalse;
+        test_main();
+        tap_plan(0);
+        return EXIT_SUCCESS;
+}
+
 @ The Perl ecosystem has a well-deserved reputation for its thorough
 testing regime and the quality (if not necessarily the quality) of
 the results so \LL/ is deliberately aping the interfaces that were
@@ -4103,16 +4225,21 @@ end of testing with an argument of 0 to emit exactly one test plan.
                                                            assignment */
 @d tap_more(t, r, m) (t) &= tap_ok((r), (m))
 @d tap_or(p,m) if (!tap_ok((p),(m)))
-@<Function dec...@>=
+@<Func...@>=
 #ifdef LL_TEST
 void tap_plan (int);
 boolean tap_ok (boolean, char *);
+char * test_msgf (char *, const char *, char *, ...);
+void test_vm_state (char *, int);
 #endif
 
 @ @<Global var...@>=
 boolean Test_Passing = btrue;
 int Test_Plan = -1;
 int Next_Test = 1; /* not 0 */
+
+@ @<Extern...@>=
+extern int Test_Plan, Next_Test;
 
 @ @c
 void
@@ -4161,10 +4288,12 @@ in-line.
 |test_vmsgf| for brevity.
 
 @d TEST_BUFSIZE 1024
-@c
+@<Complex...@>=
 @q CWEB doesn't like/understand variadic macros @>
 @q Also it puts the gap in the wrong place @>
 #define tmsgf(...)@,@,@,@,@,test_msgf(msg, prefix, __VA_ARGS__)
+
+@ @c
 char *
 test_msgf (char *tmsg,
            const char *tsrc,
@@ -4238,27 +4367,23 @@ test_vm_state (char *prefix,
         @/@, /* TODO? Others: root unchanged; */
 }
 
-@ Each \LL/ internal test script is a function named ``{\it
-|test_|...}''.  Other prefixes are also used for supporting functions.
-Arguments to the testing binary determine which test script to run
-or enter a standard REPL in the testing |environment| if there are
-none.
-
-{\bf TODO:} Add a banner and run-time detection to make it clear
-the testing environment is not for production use.
-
 @* Sanity Test. This seemingly pointless test achieves two goals:
 the test harness can run it first and can abort the entire test
 suite if it fails, and it provides a simple demonstration of how
-individual test scripts interact with the outside world, without
-obscuring it with any actual testing.
+individual test scripts interact with the harness, without obscuring
+it with the more complicated unit test framework below.
 
 @(t/sanity.c@>=
-@<Test exec...@>@;
-void
-test_main (void)
+#define LL_TEST
+#include "lossless.h"
+int
+main ()
 {
         tap_plan(1);
+        vm_init();
+        vm_prepare();
+        vm_reset();
+        interpret();
         tap_pass("LossLess compiles and runs");
 }
 
@@ -4273,39 +4398,129 @@ of Google wall but \pdfURL{Martin Fowler has reproduced it at
 https://martinfowler.com/articles/testing-culture.html}
 {https://martinfowler.com/articles/testing-culture.html}.
 
-@<Type definitions@>=
-#define LLTF_BASE_HEADER            \
-        const char *name;           \
-        test_fixture_thunk prepare; \
-        test_fixture_thunk destroy
-typedef struct lltf_Base lltf_Base;
-typedef void @[@] (*test_fixture_thunk) (struct lltf_Base *);
-struct lltf_Base {
-        LLTF_BASE_HEADER;
-};
-typedef boolean @[@] (*test_unit) (void);
+@(t/llt.h@>=
+#ifndef LLT_H
+#define LLT_H
+@<Unit test fixture header@>@;
+typedef struct llt_Fixture llt_Fixture; /* user-defined */
+typedef void @[@] (*llt_thunk) (llt_Fixture *);
+typedef boolean @[@] (*llt_unit) (llt_Fixture *);
+typedef llt_Fixture * @[@] (*llt_fixture) (void);
+extern llt_fixture Test_Fixtures[]; /* user-defined */
 
-@
-@d test_single(s) test_single_imp(s, 0)
-@d test_suite(s) test_suite_imp(s, 0)
-@c
-void
-test_single_imp (test_unit suite,
-                 int id)
+#define fmsgf(...) test_msgf(buf, fix.name, __VA_ARGS__)
+#define fpmsgf(...) test_msgf(buf, fix->name, __VA_ARGS__)
+
+llt_Fixture * llt_alloc (size_t);
+boolean llt_main (llt_Fixture *);
+llt_Fixture * llt_prepare (void);
+
+#endif /* |LLT_H| */
+
+@ Unit test fixtures are defiend in a |llt_Fixture| structure which
+is only declared in this header; it is up to each unit test to
+implement its own |llt_Fixture| with this common header.
+
+@<Unit test fixture header@>=
+#define LLT_FIXTURE_HEADER  \
+        const char *name;   \
+        const char *suffix; \
+        int id;             \
+        int max;            \
+        llt_thunk prepare;  \
+        llt_thunk act;      \
+        llt_unit test;      \
+        llt_thunk destroy@; /* no semicolon */
+
+@ The vast majority (all, so far) of unit tests follow the same
+simple structure. There are plans for more interactive tests but
+they aren't necessary yet.
+
+@<Unit test header@>=
+#define LL_TEST
+#include "lossless.h"
+#include "llt.h"
+
+@ @<Unit test body@>=
+int
+main (int argc __unused,
+      char **argv __unused)
 {
-        char msg[TEST_BUFSIZE] = {0};
-        boolean ok;
-        ok = suite();
-        tap_ok(ok, test_msgf(msg, "Test case", "%d", id));
+        llt_Fixture *suite;
+        if (argc > 1) {
+                printf("usage: %s", argv[0]);
+                return EXIT_FAILURE;
+        }
+#ifndef LLT_NOINIT
+        vm_init();
+#endif
+        suite = llt_prepare();
+        llt_main(suite);
+        free(suite);
+        tap_plan(0);
 }
 
-void
-test_suite_imp (test_unit *suite,
-                int start)
+@ @<Unit test body@>=
+llt_Fixture *
+llt_alloc (size_t n)
+{
+        llt_Fixture *f;
+        size_t i;
+        ERR_OOM_P(f = calloc(n, sizeof (llt_Fixture)));
+        for (i = 0; i < n; i++)
+                f[i].max = n;
+        return f;
+}
+
+@ @<Unit test body@>=
+boolean
+llt_main (llt_Fixture *suite)
 {
         int i;
-        for (i = start; *suite; suite++, i++)
-                test_single_imp(*suite, i);
+        boolean all, ok;
+        char buf[TEST_BUFSIZE] = {0};
+        ok = btrue;
+        for (i = 0; i < suite->max; i++) {
+                if (suite[i].prepare)
+                        suite[i].prepare((suite + i));
+                suite[i].act((suite + i));
+                if (suite[i].suffix)
+                        snprintf(buf, TEST_BUFSIZE, "%s (%s)",
+                                suite[i].name, suite[i].suffix);
+                else
+                        snprintf(buf, TEST_BUFSIZE, "%s", suite[i].name);
+                suite[i].name = (char *) buf;
+                ok = suite[i].test((suite + i));
+                tap_ok(ok, buf);
+                all = all && ok;
+                if (suite[i].destroy)
+                        suite[i].destroy((suite + i));
+        }
+        return all;
+}
+
+@ @<Unit test body@>=
+llt_Fixture *
+llt_prepare (void)
+{
+        llt_fixture *s = Test_Fixtures, *t;
+        llt_Fixture *r = NULL, *q, *p;
+        int c = 0, i;
+        int f = sizeof (llt_Fixture);
+        for (t = s; *t; t++) {
+                q = (*t)();
+                p = reallocarray(r, c + q->max, f);
+                ERR_OOM_P(p);
+                r = p;
+                bcopy(q, r + c, f * q->max);
+                c += q->max;
+                free(q);
+        }
+        for (i = 0; i < c; i++) {
+                r[i].id = i;
+                r[i].max = c;
+        }
+        return r;
 }
 
 @*1 Heap Allocation. The first units we test are the memory allocators
@@ -4316,32 +4531,7 @@ exhausting the system's memory. A global counter is decremented
 each time this variant is called and returns |NULL| if it reaches
 zero.
 
-@ @(t/cell-heap.c@>=
-@<Allocator test exec...@>@;
-
-@<Unit test the heap allocator@>@;
-
-test_unit llt_Grow_Pool_suite[] = {@|
-        llt_Grow_Pool__Immediate_Fail,
-        llt_Grow_Pool__Second_Fail,
-        llt_Grow_Pool__Third_Fail,
-        llt_Grow_Pool__Full_Success,
-        llt_Grow_Pool__Full_Immediate_Fail,
-        llt_Grow_Pool__Full_Second_Fail,
-        llt_Grow_Pool__Full_Third_Fail,
-        NULL@/
-};
-
-void
-test_main (void)
-{
-        printf("# The many unhandled out-of-memory errors"
-               " are expected and harmless.\n");
-        test_single(llt_Grow_Pool__Initial_Success);
-        test_suite_imp(llt_Grow_Pool_suite, 1);
-}
-
-@ This method of implementing unit tests has us pose 5 questions:
+This method of implementing unit tests has us pose 5 questions:
 
 \point 1. {\it What is the contract fulfilled by the code under test?}
 
@@ -4392,22 +4582,25 @@ Eight tests, four starting from no heap and four from a heap with
 data in it. One for success and one for each potentially failed
 allocation.
 
-@<Unit test the heap...@>=
-enum lltf_Grow_Pool_result {
-        LLTF_GROW_POOL_SUCCESS,
-        LLTF_GROW_POOL_FAIL_CAR,
-        LLTF_GROW_POOL_FAIL_CDR,
-        LLTF_GROW_POOL_FAIL_TAG
+@ This unit test relies on the VM being uninitialised so that it
+can safely switch out the heap pointers. The |save_CAR|, |save_CDR|
+\AM\ |save_TAG| pointers in the fixture are convenience pointers
+into |heapcopy|.
+
+@(t/cell-heap.c@>=
+#define LLT_NOINIT
+@<Unit test header@>@;
+
+enum llt_Grow_Pool_result {
+        LLT_GROW_POOL_SUCCESS,
+        LLT_GROW_POOL_FAIL_CAR,
+        LLT_GROW_POOL_FAIL_CDR,
+        LLT_GROW_POOL_FAIL_TAG
 };
 
-@ The test fixture describes how to perform the test and what to
-expect out of it. |fix.expect| is an enum which identifies the
-checks to carry out after performing the test.
-
-@<Unit test the heap...@>=
-typedef struct {
-        LLTF_BASE_HEADER;
-        enum lltf_Grow_Pool_result expect;
+struct llt_Fixture {
+        LLT_FIXTURE_HEADER;
+        enum llt_Grow_Pool_result expect;
         int   allocations;
         int   Poolsize;
         int   Segment;
@@ -4418,31 +4611,27 @@ typedef struct {
         cell *save_CAR;
         cell *save_CDR;
         char *save_TAG;
-} lltf_Grow_Pool;
+};
 
-@ @<Unit test the heap...@>=
-void llt_Grow_Pool_prepare (lltf_Grow_Pool *);
-void llt_Grow_Pool_destroy (lltf_Grow_Pool *);
-lltf_Grow_Pool
-llt_Grow_Pool_fix (const char *name)
-{
-        lltf_Grow_Pool fix;
-        bzero(&fix, sizeof (fix));
-        fix.name = name;
-        fix.prepare = (test_fixture_thunk) llt_Grow_Pool_prepare;
-        fix.destroy = (test_fixture_thunk) llt_Grow_Pool_destroy;
-        fix.expect = LLTF_GROW_POOL_SUCCESS;
-        fix.allocations = -1;
-        fix.Segment = HEAP_SEGMENT;
-        return fix;
-}
+@<Unit test body@>@;
 
-@ This unit test relies on the VM being uninitialised so that it
-can safely switch out the heap pointers.
+@<Unit test: grow heap pool@>@;
 
-@<Unit test the heap...@>=
+llt_fixture Test_Fixtures[] = {@|
+        llt_Grow_Pool__Initial_Success,
+        llt_Grow_Pool__Immediate_Fail,
+        llt_Grow_Pool__Second_Fail,
+        llt_Grow_Pool__Third_Fail,
+        llt_Grow_Pool__Full_Success,
+        llt_Grow_Pool__Full_Immediate_Fail,
+        llt_Grow_Pool__Full_Second_Fail,
+        llt_Grow_Pool__Full_Third_Fail,
+        NULL@/
+};
+
+@ @<Unit test: grow heap...@>=
 void
-llt_Grow_Pool_prepare (lltf_Grow_Pool *fix)
+llt_Grow_Pool_prepare (llt_Fixture *fix)
 {
         if (fix->Poolsize) {
                 int cs = fix->Poolsize;
@@ -4462,9 +4651,9 @@ llt_Grow_Pool_prepare (lltf_Grow_Pool *fix)
         Cells_Segment = fix->Segment;
 }
 
-@ @<Unit test the heap...@>=
+@ @<Unit test: grow heap...@>=
 void
-llt_Grow_Pool_destroy (lltf_Grow_Pool *fix)
+llt_Grow_Pool_destroy (llt_Fixture *fix)
 {
         free(CAR);
         free(CDR);
@@ -4480,146 +4669,162 @@ llt_Grow_Pool_destroy (lltf_Grow_Pool *fix)
 and call |new_cells_segment| then validate that the memory was, or
 was not, correctly reallocated.
 
-@<Unit test the heap...@>=
-boolean
-llt_Grow_Pool_exec (lltf_Grow_Pool fix)
+@<Unit test: grow heap...@>=
+void
+llt_Grow_Pool_act (llt_Fixture *fix)
 {
-        char msg[TEST_BUFSIZE] = {0};
-        boolean ok;
         jmp_buf save_jmp;
-        if (fix.prepare)
-                fix.prepare((lltf_Base *) &fix);
-        Allocate_Success = fix.allocations;
+        Allocate_Success = fix->allocations;
         memcpy(&save_jmp, &Goto_Begin, sizeof (jmp_buf));
         if (!setjmp(Goto_Begin))
                 new_cells_segment();
         Allocate_Success = -1;
         memcpy(&Goto_Begin, &save_jmp, sizeof (jmp_buf));
-        @#
-        switch (fix.expect) {
-        case LLTF_GROW_POOL_SUCCESS:@/
-                @<Unit test allocations, validate success@>@;
+}
+
+@ @<Unit test: grow heap...@>=
+boolean
+llt_Grow_Pool_test (llt_Fixture *fix)
+{
+        boolean ok;
+        char buf[TEST_BUFSIZE] = {0};
+        switch (fix->expect) {
+        case LLT_GROW_POOL_SUCCESS:@/
+                @<Unit test part: grow heap pool, validate success@>@;
                 break; /* TODO: test for bzero */
-        case LLTF_GROW_POOL_FAIL_CAR:@/
-                @<Unit test allocations, validate car failure@>@;
+        case LLT_GROW_POOL_FAIL_CAR:@/
+                @<Unit test part: grow heap pool, validate car failure@>@;
                 break;
-        case LLTF_GROW_POOL_FAIL_CDR:@/
-                @<Unit test allocations, validate cdr failure@>@;
+        case LLT_GROW_POOL_FAIL_CDR:@/
+                @<Unit test part: grow heap pool, validate cdr failure@>@;
                 break;
-        case LLTF_GROW_POOL_FAIL_TAG:@/
-                @<Unit test allocations, validate tag failure@>@;
+        case LLT_GROW_POOL_FAIL_TAG:@/
+                @<Unit test part: grow heap pool, validate tag failure@>@;
                 break;
         }
-        if (fix.destroy)
-                fix.destroy((lltf_Base *) &fix);
         return ok;
 }
 
-@ @<Unit test allocations, validate success@>=
-ok = tap_ok(Cells_Poolsize == (fix.Poolsize + fix.Segment),
-        test_msgf(msg, fix.name, "Cells_Poolsize is increased"));
-tap_more(ok, Cells_Segment == (fix.Poolsize + fix.Segment) / 2,
-        test_msgf(msg, fix.name, "Cells_Segment is increased"));
+@ @<Unit test part: grow heap pool, validate success@>=
+ok = tap_ok(Cells_Poolsize == (fix->Poolsize + fix->Segment),
+        fpmsgf("Cells_Poolsize is increased"));
+tap_more(ok, Cells_Segment == (fix->Poolsize + fix->Segment) / 2,
+        fpmsgf("Cells_Segment is increased"));
 tap_more(ok, CAR != CDR && CAR != (cell*) TAG,
-        test_msgf(msg, fix.name, "CAR, CDR & TAG are unique"));
+        fpmsgf("CAR, CDR & TAG are unique"));
 tap_more(ok, CAR != NULL,
-        test_msgf(msg, fix.name, "CAR is not NULL"));
-tap_more(ok, !bcmp(CAR, fix.save_CAR, sizeof (cell) * fix.Poolsize),
-        test_msgf(msg, fix.name, "CAR heap is unchanged"));
+        fpmsgf("CAR is not NULL"));
+tap_more(ok, !bcmp(CAR, fix->save_CAR, sizeof (cell) * fix->Poolsize),
+        fpmsgf("CAR heap is unchanged"));
 tap_more(ok, CDR != NULL,
-        test_msgf(msg, fix.name, "CDR is not NULL"));
-tap_more(ok, !memcmp(CDR, fix.save_CDR, sizeof (cell) * fix.Poolsize),
-        test_msgf(msg, fix.name, "CDR heap is unchanged"));
+        fpmsgf("CDR is not NULL"));
+tap_more(ok, !memcmp(CDR, fix->save_CDR, sizeof (cell) * fix->Poolsize),
+        fpmsgf("CDR heap is unchanged"));
 tap_more(ok, TAG != NULL,
-        test_msgf(msg, fix.name, "TAG is not NULL"));
-tap_more(ok, !memcmp(TAG, fix.save_TAG, sizeof (char) * fix.Poolsize),
-        test_msgf(msg, fix.name, "TAG heap is unchanged"));
+        fpmsgf("TAG is not NULL"));
+tap_more(ok, !memcmp(TAG, fix->save_TAG, sizeof (char) * fix->Poolsize),
+        fpmsgf("TAG heap is unchanged"));
 
-@ @<Unit test allocations, validate car failure@>=
-ok = tap_ok(Cells_Poolsize == fix.Poolsize,
-        test_msgf(msg, fix.name, "Cells_Poolsize is not increased"));
-tap_more(ok, Cells_Segment == fix.Segment,
-        test_msgf(msg, fix.name, "Cells_Segment is not increased"));
-tap_more(ok, CAR == fix.CAR,
-        test_msgf(msg, fix.name, "CAR is unchanged"));
-tap_more(ok, CDR == fix.CDR,
-        test_msgf(msg, fix.name, "CDR is unchanged"));
-tap_more(ok, TAG == fix.TAG,
-        test_msgf(msg, fix.name, "TAG is unchanged"));
+@ @<Unit test part: grow heap pool, validate car failure@>=
+ok = tap_ok(Cells_Poolsize == fix->Poolsize,
+        fpmsgf("Cells_Poolsize is not increased"));
+tap_more(ok, Cells_Segment == fix->Segment,
+        fpmsgf("Cells_Segment is not increased"));
+tap_more(ok, CAR == fix->CAR,
+        fpmsgf("CAR is unchanged"));
+tap_more(ok, CDR == fix->CDR,
+        fpmsgf("CDR is unchanged"));
+tap_more(ok, TAG == fix->TAG,
+        fpmsgf("TAG is unchanged"));
 
-@ @<Unit test allocations, validate cdr failure@>=
-ok = tap_ok(Cells_Poolsize == fix.Poolsize,
-        test_msgf(msg, fix.name, "Cells_Poolsize is not increased"));
-tap_more(ok, Cells_Segment == fix.Segment,
-        test_msgf(msg, fix.name, "Cells_Segment is not increased"));
-tap_more(ok, !memcmp(CAR, fix.save_CAR, sizeof (cell) * fix.Poolsize),
-        test_msgf(msg, fix.name, "CAR heap is unchanged"));
-tap_more(ok, CDR == fix.CDR,
-        test_msgf(msg, fix.name, "CDR is unchanged"));
-tap_more(ok, TAG == fix.TAG,
-        test_msgf(msg, fix.name, "TAG is unchanged"));
+@ @<Unit test part: grow heap pool, validate cdr failure@>=
+ok = tap_ok(Cells_Poolsize == fix->Poolsize,
+        fpmsgf("Cells_Poolsize is not increased"));
+tap_more(ok, Cells_Segment == fix->Segment,
+        fpmsgf("Cells_Segment is not increased"));
+tap_more(ok, !memcmp(CAR, fix->save_CAR, sizeof (cell) * fix->Poolsize),
+        fpmsgf("CAR heap is unchanged"));
+tap_more(ok, CDR == fix->CDR,
+        fpmsgf("CDR is unchanged"));
+tap_more(ok, TAG == fix->TAG,
+        fpmsgf("TAG is unchanged"));
 
-@ @<Unit test allocations, validate tag failure@>=
-ok = tap_ok(Cells_Poolsize == fix.Poolsize,
-        test_msgf(msg, fix.name, "Cells_Poolsize is not increased"));
-tap_more(ok, Cells_Segment == fix.Segment,
-        test_msgf(msg, fix.name, "Cells_Segment is not increased"));
-tap_more(ok, !memcmp(CAR, fix.save_CAR, sizeof (cell) * fix.Poolsize),
-        test_msgf(msg, fix.name, "CAR heap is unchanged"));
-tap_more(ok, !memcmp(CDR, fix.save_CDR, sizeof (cell) * fix.Poolsize),
-        test_msgf(msg, fix.name, "CDR heap is unchanged"));
-tap_more(ok, TAG == fix.TAG,
-        test_msgf(msg, fix.name, "TAG is unchanged"));
+@ @<Unit test part: grow heap pool, validate tag failure@>=
+ok = tap_ok(Cells_Poolsize == fix->Poolsize,
+        fpmsgf("Cells_Poolsize is not increased"));
+tap_more(ok, Cells_Segment == fix->Segment,
+        fpmsgf("Cells_Segment is not increased"));
+tap_more(ok, !memcmp(CAR, fix->save_CAR, sizeof (cell) * fix->Poolsize),
+        fpmsgf("CAR heap is unchanged"));
+tap_more(ok, !memcmp(CDR, fix->save_CDR, sizeof (cell) * fix->Poolsize),
+        fpmsgf("CDR heap is unchanged"));
+tap_more(ok, TAG == fix->TAG,
+        fpmsgf("TAG is unchanged"));
+
+@ @<Unit test: grow heap...@>=
+llt_Fixture *
+llt_Grow_Pool_fix (llt_Fixture *fix,
+                   const char *name)
+{
+        fix->name = name;
+        fix->prepare = llt_Grow_Pool_prepare;
+        fix->destroy = llt_Grow_Pool_destroy;
+        fix->act = llt_Grow_Pool_act;
+        fix->test = llt_Grow_Pool_test;
+        fix->expect = LLT_GROW_POOL_SUCCESS;
+        fix->allocations = -1;
+        fix->Segment = HEAP_SEGMENT;
+        return fix;
+}
 
 @ This tests that allocation is successful the first time the heap
 is ever allocated. It is the simplest test in this unit.
 
-@<Unit test the heap...@>=
-boolean
+@<Unit test: grow heap...@>=
+llt_Fixture *
 llt_Grow_Pool__Initial_Success (void)
 {
-        lltf_Grow_Pool fix = llt_Grow_Pool_fix(__func__);
-        return llt_Grow_Pool_exec(fix);
+        return llt_Grow_Pool_fix(llt_alloc(1), __func__);
 }
 
 @ If the very first call to |reallocarray| fails then everything
 should remain unchanged.
 
-@<Unit test the heap...@>=
-boolean
+@<Unit test: grow heap...@>=
+llt_Fixture *
 llt_Grow_Pool__Immediate_Fail (void)
 {
-        lltf_Grow_Pool fix = llt_Grow_Pool_fix(__func__);
-        fix.expect = LLTF_GROW_POOL_FAIL_CAR;
-        fix.allocations = 0;
-        return llt_Grow_Pool_exec(fix);
+        llt_Fixture *fix = llt_Grow_Pool_fix(llt_alloc(1), __func__);
+        fix->expect = LLT_GROW_POOL_FAIL_CAR;
+        fix->allocations = 0;
+        return fix;
 }
 
-@ @<Unit test the heap...@>=
-boolean
+@ @<Unit test: grow heap...@>=
+llt_Fixture *
 llt_Grow_Pool__Second_Fail (void)
 {
-        lltf_Grow_Pool fix = llt_Grow_Pool_fix(__func__);
-        fix.expect = LLTF_GROW_POOL_FAIL_CDR;
-        fix.allocations = 1;
-        return llt_Grow_Pool_exec(fix);
+        llt_Fixture *fix = llt_Grow_Pool_fix(llt_alloc(1), __func__);
+        fix->expect = LLT_GROW_POOL_FAIL_CDR;
+        fix->allocations = 1;
+        return fix;
 }
 
-@ @<Unit test the heap...@>=
-boolean
+@ @<Unit test: grow heap...@>=
+llt_Fixture *
 llt_Grow_Pool__Third_Fail (void)
 {
-        lltf_Grow_Pool fix = llt_Grow_Pool_fix(__func__);
-        fix.expect = LLTF_GROW_POOL_FAIL_TAG;
-        fix.allocations = 2;
-        return llt_Grow_Pool_exec(fix);
+        llt_Fixture *fix = llt_Grow_Pool_fix(llt_alloc(1), __func__);
+        fix->expect = LLT_GROW_POOL_FAIL_TAG;
+        fix->allocations = 2;
+        return fix;
 }
 
 @ Data already on the heap must be preserved exactly.
 
-@<Unit test the heap...@>=
+@<Unit test: grow heap...@>=
 void
-lltf_Grow_Pool__fill(lltf_Grow_Pool *fix)
+llt_Grow_Pool__fill(llt_Fixture *fix)
 {
         size_t i;
         fix->CAR = reallocarray(NULL, fix->Poolsize, sizeof (cell));
@@ -4633,114 +4838,90 @@ lltf_Grow_Pool__fill(lltf_Grow_Pool *fix)
                 *(((int *) fix->TAG) + i) = rand();
 }
 
-@ @<Unit test the heap...@>=
-boolean
+@ @<Unit test: grow heap...@>=
+llt_Fixture *
 llt_Grow_Pool__Full_Success (void)
 {
-        lltf_Grow_Pool fix = llt_Grow_Pool_fix(__func__);
-        fix.Poolsize = HEAP_SEGMENT;
-        lltf_Grow_Pool__fill(&fix);
-        return llt_Grow_Pool_exec(fix);
+        llt_Fixture *fix = llt_Grow_Pool_fix(llt_alloc(1), __func__);
+        fix->Poolsize = HEAP_SEGMENT;
+        llt_Grow_Pool__fill(fix);
+        return fix;
 }
 
-@ @<Unit test the heap...@>=
-boolean
+@ @<Unit test: grow heap...@>=
+llt_Fixture *
 llt_Grow_Pool__Full_Immediate_Fail (void)
 {
-        lltf_Grow_Pool fix = llt_Grow_Pool_fix(__func__);
-        fix.expect = LLTF_GROW_POOL_FAIL_CAR;
-        fix.allocations = 0;
-        fix.Poolsize = HEAP_SEGMENT;
-        lltf_Grow_Pool__fill(&fix);
-        return llt_Grow_Pool_exec(fix);
+        llt_Fixture *fix = llt_Grow_Pool_fix(llt_alloc(1), __func__);
+        fix->expect = LLT_GROW_POOL_FAIL_CAR;
+        fix->allocations = 0;
+        fix->Poolsize = HEAP_SEGMENT;
+        llt_Grow_Pool__fill(fix);
+        return fix;
 }
 
-@ @<Unit test the heap...@>=
-boolean
+@ @<Unit test: grow heap...@>=
+llt_Fixture *
 llt_Grow_Pool__Full_Second_Fail (void)
 {
-        lltf_Grow_Pool fix = llt_Grow_Pool_fix(__func__);
-        fix.expect = LLTF_GROW_POOL_FAIL_CDR;
-        fix.allocations = 1;
-        fix.Poolsize = HEAP_SEGMENT;
-        lltf_Grow_Pool__fill(&fix);
-        return llt_Grow_Pool_exec(fix);
+        llt_Fixture *fix = llt_Grow_Pool_fix(llt_alloc(1), __func__);
+        fix->expect = LLT_GROW_POOL_FAIL_CDR;
+        fix->allocations = 1;
+        fix->Poolsize = HEAP_SEGMENT;
+        llt_Grow_Pool__fill(fix);
+        return fix;
 }
 
-@ @<Unit test the heap...@>=
-boolean
+@ @<Unit test: grow heap...@>=
+llt_Fixture *
 llt_Grow_Pool__Full_Third_Fail (void)
 {
-        lltf_Grow_Pool fix = llt_Grow_Pool_fix(__func__);
-        fix.expect = LLTF_GROW_POOL_FAIL_TAG;
-        fix.allocations = 2;
-        fix.Poolsize = HEAP_SEGMENT;
-        lltf_Grow_Pool__fill(&fix);
-        return llt_Grow_Pool_exec(fix);
+        llt_Fixture *fix = llt_Grow_Pool_fix(llt_alloc(1), __func__);
+        fix->expect = LLT_GROW_POOL_FAIL_TAG;
+        fix->allocations = 2;
+        fix->Poolsize = HEAP_SEGMENT;
+        llt_Grow_Pool__fill(fix);
+        return fix;
 }
 
 @*1 Vector Heap. Testing the vector's heap is the same but simpler
 because it has 1 not 3 possible error conditions so this section
 is duplicated from the previous without further explanation.
 
-@ @(t/vector-heap.c@>=
-@<Allocator test exec...@>@;
+@(t/vector-heap.c@>=
+#define LLT_NOINIT
+@<Unit test header@>@;
 
-@<Unit test the vector allocator@>@;
+enum llt_Grow_Vector_Pool_result {
+        LLT_GROW_VECTOR_POOL_SUCCESS,
+        LLT_GROW_VECTOR_POOL_FAIL
+};
 
-test_unit llt_Grow_Vector_Pool_suite[] = {@|
+struct llt_Fixture {
+        LLT_FIXTURE_HEADER;
+        enum llt_Grow_Vector_Pool_result expect;
+        int   allocations;
+        int   Poolsize;
+        int   Segment;
+        cell *VECTOR;
+        cell *save_VECTOR;
+};
+
+@<Unit test body@>@;
+
+@<Unit test: grow vector pool@>@;
+
+llt_fixture Test_Fixtures[] = {@|
+        llt_Grow_Vector_Pool__Empty_Success,
         llt_Grow_Vector_Pool__Empty_Fail,
         llt_Grow_Vector_Pool__Full_Success,
         llt_Grow_Vector_Pool__Full_Fail,
         NULL@/
 };
 
+@ @<Unit test: grow vector...@>=
 void
-test_main (void)
-{
-        printf("# The many unhandled out-of-memory errors"
-               " are expected and harmless.\n");
-        test_single(llt_Grow_Vector_Pool__Empty_Success);
-        test_suite_imp(llt_Grow_Vector_Pool_suite, 1);
-}
-
-@ @<Unit test the vector...@>=
-enum lltf_Grow_Vector_Pool_result {
-        LLTF_GROW_VECTOR_POOL_SUCCESS,
-        LLTF_GROW_VECTOR_POOL_FAIL
-};
-
-@ @<Unit test the vector...@>=
-typedef struct {
-        LLTF_BASE_HEADER;
-        enum lltf_Grow_Vector_Pool_result expect;
-        int   allocations;
-        int   Poolsize;
-        int   Segment;
-        cell *VECTOR;
-        cell *save_VECTOR;
-} lltf_Grow_Vector_Pool;
-
-@ @<Unit test the vector...@>=
-void llt_Grow_Vector_Pool_prepare (lltf_Grow_Vector_Pool *);
-void llt_Grow_Vector_Pool_destroy (lltf_Grow_Vector_Pool *);
-lltf_Grow_Vector_Pool
-llt_Grow_Vector_Pool_fix (const char *name)
-{
-        lltf_Grow_Vector_Pool fix;
-        bzero(&fix, sizeof (fix));
-        fix.name = name;
-        fix.prepare = (test_fixture_thunk) llt_Grow_Vector_Pool_prepare;
-        fix.destroy = (test_fixture_thunk) llt_Grow_Vector_Pool_destroy;
-        fix.expect = LLTF_GROW_VECTOR_POOL_SUCCESS;
-        fix.allocations = -1;
-        fix.Segment = HEAP_SEGMENT;
-        return fix;
-}
-
-@ @<Unit test the vector...@>=
-void
-llt_Grow_Vector_Pool_prepare (lltf_Grow_Vector_Pool *fix)
+llt_Grow_Vector_Pool_prepare (llt_Fixture *fix)
 {
         if (fix->Poolsize) {
                 int cs = fix->Poolsize;
@@ -4752,9 +4933,9 @@ llt_Grow_Vector_Pool_prepare (lltf_Grow_Vector_Pool *fix)
         Vectors_Segment = fix->Segment;
 }
 
-@ @<Unit test the vector...@>=
+@ @<Unit test: grow vector...@>=
 void
-llt_Grow_Vector_Pool_destroy (lltf_Grow_Vector_Pool *fix)
+llt_Grow_Vector_Pool_destroy (llt_Fixture *fix)
 {
         free(VECTOR);
         free(fix->save_VECTOR);
@@ -4763,74 +4944,90 @@ llt_Grow_Vector_Pool_destroy (lltf_Grow_Vector_Pool *fix)
         Vectors_Segment = HEAP_SEGMENT;
 }
 
-@ @<Unit test the vector...@>=
-boolean
-llt_Grow_Vector_Pool_exec (lltf_Grow_Vector_Pool fix)
+@ @<Unit test: grow vector...@>=
+void
+llt_Grow_Vector_Pool_act (llt_Fixture *fix)
 {
-        char msg[TEST_BUFSIZE] = {0};
-        boolean ok;
         jmp_buf save_jmp;
-        if (fix.prepare)
-                fix.prepare((lltf_Base *) &fix);
-        Allocate_Success = fix.allocations;
+        Allocate_Success = fix->allocations;
         memcpy(&save_jmp, &Goto_Begin, sizeof (jmp_buf));
         if (!setjmp(Goto_Begin))
                 new_vector_segment();
         Allocate_Success = -1;
         memcpy(&Goto_Begin, &save_jmp, sizeof (jmp_buf));
-        @#
-        switch (fix.expect) {
-        case LLTF_GROW_VECTOR_POOL_SUCCESS:@/
-                @<Unit test vector allocations, validate success@>@;
+}
+
+@ @<Unit test: grow vector...@>=
+boolean
+llt_Grow_Vector_Pool_test (llt_Fixture *fix)
+{
+        boolean ok;
+        char buf[TEST_BUFSIZE] = {0};
+        switch (fix->expect) {
+        case LLT_GROW_VECTOR_POOL_SUCCESS:@/
+                @<Unit test part: grow vector pool, validate success@>@;
                 break; /* TODO: test for bzero */
-        case LLTF_GROW_VECTOR_POOL_FAIL:@/
-                @<Unit test vector allocations, validate failure@>@;
+        case LLT_GROW_VECTOR_POOL_FAIL:@/
+                @<Unit test part: grow vector pool, validate failure@>@;
                 break;
         }
-        if (fix.destroy)
-                fix.destroy((lltf_Base *) &fix);
         return ok;
 }
 
-@ @<Unit test vector allocations, validate success@>=
-ok = tap_ok(Vectors_Poolsize == (fix.Poolsize + fix.Segment),
-        test_msgf(msg, fix.name, "Vectors_Poolsize is increased"));
-tap_more(ok, Vectors_Segment == (fix.Poolsize + fix.Segment) / 2,
-        test_msgf(msg, fix.name, "Vectors_Segment is increased"));
+@ @<Unit test part: grow vector pool, validate success@>=
+ok = tap_ok(Vectors_Poolsize == (fix->Poolsize + fix->Segment),
+        fpmsgf("Vectors_Poolsize is increased"));
+tap_more(ok, Vectors_Segment == (fix->Poolsize + fix->Segment) / 2,
+        fpmsgf("Vectors_Segment is increased"));
 tap_more(ok, VECTOR != NULL,
-        test_msgf(msg, fix.name, "VECTOR is not NULL"));
-tap_more(ok, !bcmp(VECTOR, fix.save_VECTOR, sizeof (cell) * fix.Poolsize),
-        test_msgf(msg, fix.name, "VECTOR heap is unchanged"));
+        fpmsgf("VECTOR is not NULL"));
+tap_more(ok, !bcmp(VECTOR, fix->save_VECTOR, sizeof (cell) * fix->Poolsize),
+        fpmsgf("VECTOR heap is unchanged"));
 
-@ @<Unit test vector allocations, validate failure@>=
-ok = tap_ok(Vectors_Poolsize == fix.Poolsize,
-        test_msgf(msg, fix.name, "Vectors_Poolsize is not increased"));
-tap_more(ok, Vectors_Segment == fix.Segment,
-        test_msgf(msg, fix.name, "Vectors_Segment is not increased"));
-tap_more(ok, VECTOR == fix.VECTOR,
-        test_msgf(msg, fix.name, "VECTOR is unchanged"));
+@ @<Unit test part: grow vector pool, validate failure@>=
+ok = tap_ok(Vectors_Poolsize == fix->Poolsize,
+        fpmsgf("Vectors_Poolsize is not increased"));
+tap_more(ok, Vectors_Segment == fix->Segment,
+        fpmsgf("Vectors_Segment is not increased"));
+tap_more(ok, VECTOR == fix->VECTOR,
+        fpmsgf("VECTOR is unchanged"));
 
-@ @<Unit test the vector...@>=
-boolean
+@ @<Unit test: grow vector...@>=
+llt_Fixture *
+llt_Grow_Vector_Pool_fix (llt_Fixture *fix,
+                          const char *name)
+{
+        fix->name = name;
+        fix->prepare = llt_Grow_Vector_Pool_prepare;
+        fix->destroy = llt_Grow_Vector_Pool_destroy;
+        fix->act = llt_Grow_Vector_Pool_act;
+        fix->test = llt_Grow_Vector_Pool_test;
+        fix->expect = LLT_GROW_VECTOR_POOL_SUCCESS;
+        fix->allocations = -1;
+        fix->Segment = HEAP_SEGMENT;
+        return fix;
+}
+
+@ @<Unit test: grow vector...@>=
+llt_Fixture *
 llt_Grow_Vector_Pool__Empty_Success (void)
 {
-        lltf_Grow_Vector_Pool fix = llt_Grow_Vector_Pool_fix(__func__);
-        return llt_Grow_Vector_Pool_exec(fix);
+        return llt_Grow_Vector_Pool_fix(llt_alloc(1), __func__);
 }
 
-@ @<Unit test the vector...@>=
-boolean
+@ @<Unit test: grow vector...@>=
+llt_Fixture *
 llt_Grow_Vector_Pool__Empty_Fail (void)
 {
-        lltf_Grow_Vector_Pool fix = llt_Grow_Vector_Pool_fix(__func__);
-        fix.expect = LLTF_GROW_VECTOR_POOL_FAIL;
-        fix.allocations = 0;
-        return llt_Grow_Vector_Pool_exec(fix);
+        llt_Fixture *fix = llt_Grow_Vector_Pool_fix(llt_alloc(1), __func__);
+        fix->expect = LLT_GROW_VECTOR_POOL_FAIL;
+        fix->allocations = 0;
+        return fix;
 }
 
-@ @<Unit test the vector...@>=
+@ @<Unit test: grow vector...@>=
 void
-lltf_Grow_Vector_Pool__fill(lltf_Grow_Vector_Pool *fix)
+llt_Grow_Vector_Pool__fill(llt_Fixture *fix)
 {
         size_t i;
         fix->VECTOR = reallocarray(NULL, fix->Poolsize, sizeof (cell));
@@ -4838,26 +5035,26 @@ lltf_Grow_Vector_Pool__fill(lltf_Grow_Vector_Pool *fix)
                 *(((int *) fix->VECTOR) + i) = rand();
 }
 
-@ @<Unit test the vector...@>=
-boolean
+@ @<Unit test: grow vector...@>=
+llt_Fixture *
 llt_Grow_Vector_Pool__Full_Success (void)
 {
-        lltf_Grow_Vector_Pool fix = llt_Grow_Vector_Pool_fix(__func__);
-        fix.Poolsize = HEAP_SEGMENT;
-        lltf_Grow_Vector_Pool__fill(&fix);
-        return llt_Grow_Vector_Pool_exec(fix);
+        llt_Fixture *fix = llt_Grow_Vector_Pool_fix(llt_alloc(1), __func__);
+        fix->Poolsize = HEAP_SEGMENT;
+        llt_Grow_Vector_Pool__fill(fix);
+        return fix;
 }
 
-@ @<Unit test the vector...@>=
-boolean
+@ @<Unit test: grow vector...@>=
+llt_Fixture *
 llt_Grow_Vector_Pool__Full_Fail (void)
 {
-        lltf_Grow_Vector_Pool fix = llt_Grow_Vector_Pool_fix(__func__);
-        fix.expect = LLTF_GROW_VECTOR_POOL_FAIL;
-        fix.allocations = 0;
-        fix.Poolsize = HEAP_SEGMENT;
-        lltf_Grow_Vector_Pool__fill(&fix);
-        return llt_Grow_Vector_Pool_exec(fix);
+        llt_Fixture *fix = llt_Grow_Vector_Pool_fix(llt_alloc(1), __func__);
+        fix->expect = LLT_GROW_VECTOR_POOL_FAIL;
+        fix->allocations = 0;
+        fix->Poolsize = HEAP_SEGMENT;
+        llt_Grow_Vector_Pool__fill(fix);
+        return fix;
 }
 
 @*1 Garbage Collector.
@@ -4879,7 +5076,7 @@ and don't do anything strange. This code is extremely boring and
 repetetive.
 
 @(t/pair.c@>=
-@<Test exec...@>@;
+@<Old test exec...@>@;
 void
 test_main (void)
 {
@@ -5036,7 +5233,7 @@ the program which the first argument evaluates to is itself evaluated
 in the environment the second argument evaluates to.
 
 @(t/eval.c@>=
-@<Test exec...@>@;
+@<Old test exec...@>@;
 void
 test_main (void) {
         cell t, m, p;
@@ -5210,7 +5407,7 @@ is provided without an alternate it is as though the alternate was
 the value |VOID|, and that a call to it has no unexpected side-effects.
 
 @(t/if.c@>=
-@<Test exec...@>@;
+@<Old test exec...@>@;
 void
 test_main (void)
 {
@@ -5354,7 +5551,7 @@ usable \LL/ language yet and b) I have a feeling I may want to write
 deeper individual tests.
 
 @(t/lambda.c@>=
-@<Test exec...@>@;
+@<Old test exec...@>@;
 void
 test_main (void)
 {
@@ -5644,7 +5841,7 @@ where and care taken to ensure that arguments are evaluated when
 appropriate.
 
 @(t/vov.c@>=
-@<Test exec...@>@;
+@<Old test exec...@>@;
 void
 test_main (void)
 {
@@ -5974,7 +6171,7 @@ will halt and jump back |Goto_Begin|.
 
 @d GOTO_FAIL "((lambda x (error fail)))"
 @(t/exception.c@>=
-@<Test exec...@>@;
+@<Old test exec...@>@;
 void
 test_main (void)
 {
@@ -6033,7 +6230,6 @@ test_main (void)
 @* REPL. The |main| loop is a simple repl.
 
 @(repl.c@>=
-#include <stdio.h>
 #include "lossless.h"
 
 int
@@ -6064,7 +6260,7 @@ main (int    argc,
 }
 
 @* Association Lists.
-@<Function dec...@>=
+@<Func...@>=
 cell assoc_member (cell, cell);
 cell assoc_content (cell, cell);
 cell assoc_value (cell, cell);
