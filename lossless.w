@@ -515,6 +515,9 @@ cell Zero_Vector = NIL;
 @ @<Extern...@>=
 extern cell Zero_Vector;
 
+@ @<Protected...@>=
+&Zero_Vector,
+
 @ @<Global init...@>=
 Zero_Vector = vector_new_imp(0, 0, 0);
 
@@ -527,14 +530,14 @@ without the need for preallocated storage.
 
 @ @<Func...@>=
 cell vector_new (int, cell);
-cell vector_new_imp (int, int, cell);
+cell vector_new_imp (int, boolean, cell);
 cell vector_new_list (cell, int);
 cell vector_sub (cell, int, int, int, int, cell);
 
 @ @c
 cell
 vector_new_imp (int  size,
-                int  fill_p,
+                boolean fill_p,
                 cell fill)
 {
         int wsize, off, i;
@@ -542,10 +545,9 @@ vector_new_imp (int  size,
         wsize = vector_realsize(size);
         if (Vectors_Free + wsize >= Vectors_Poolsize) {
                 gc_vectors();
-                while (Vectors_Free + wsize >= (Vectors_Poolsize - (Vectors_Poolsize / 2))) {
+                while (Vectors_Free + wsize
+                                >= (Vectors_Poolsize - (Vectors_Poolsize / 2)))
                         new_vector_segment();
-                        gc_vectors(); /* Is this really necessary? */
-                }
         }
         r = atom(NIL, NIL, FORMAT_VECTOR);
         off = Vectors_Free;
@@ -567,7 +569,7 @@ vector_new (int  size,
 {
         if (size == 0)
                 return Zero_Vector;
-        return vector_new_imp(size, 1, fill);
+        return vector_new_imp(size, btrue, fill);
 }
 
 @ |vector_new_list| turns a |list| of |pair|s into a |vector|.
