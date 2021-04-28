@@ -148,10 +148,6 @@ extern jmp_buf Goto_Error;
 void handle_error (char *, cell, cell) __dead;
 void warn (char *, cell);
 
-@ @<Visible...@>=
-void handle_error (char *, cell, cell) __dead;
-void warn (char *, cell);
-
 @ Raised errors may either be a \CEE/-`string'\footnote{$^1$}{\CEE/
 does not have strings, it has pointers to memory buffers that
 probably contain ASCII and might also happen to have a |NULL| in
@@ -269,6 +265,16 @@ extern int Cells_Poolsize, Cells_Segment;
 
 @ @<Func...@>=
 void new_cells_segment (void);
+
+@ @<Pre-init...@>=
+free(CAR);
+free(CDR);
+free(TAG);
+CAR = CDR = NULL;
+TAG = NULL;
+Cells_Free = NIL;
+Cells_Poolsize = 0;
+Cells_Segment = HEAP_SEGMENT;
 
 @ The pool is spread across |CAR|, |CDR| and |TAG| and starts off
 with a size of zero |cell|s, growing by |Cells_Segment| |cell|s
@@ -410,6 +416,9 @@ extern cell Tmp_CAR, Tmp_CDR;
 @ @<Function dec...@>=
 cell atom (cell, cell, char);
 
+@ @<Pre-init...@>=
+Tmp_CAR = Tmp_CDR = NIL;
+
 @ @d cons(a, d) atom((a), (d), FORMAT_CONS)
 @c
 cell
@@ -457,6 +466,12 @@ extern int Vectors_Free, Vectors_Poolsize, Vectors_Segment;
 @ @<Func...@>=
 void new_vector_segment (void);
 
+@ @<Pre-init...@>=
+free(VECTOR);
+VECTOR = NULL;
+Vectors_Free = Vectors_Poolsize = 0;
+Vectors_Segment = HEAP_SEGMENT;
+
 @ @c
 void
 new_vector_segment (void)
@@ -502,6 +517,9 @@ extern cell Zero_Vector;
 
 @ @<Global init...@>=
 Zero_Vector = vector_new_imp(0, 0, 0);
+
+@ @<Pre-init...@>=
+Zero_Vector = NIL;
 
 @ Separate storage means separate garbage collection and a different
 allocator. |vector_new_imp|, again, is broadly similar to |atom|
@@ -619,6 +637,7 @@ extern cell *ROOTS;
 int gc (void);
 int gc_vectors (void);
 void mark (cell);
+int sweep (void);
 
 @ @c
 void
@@ -694,24 +713,14 @@ mark (cell next)
 }
 
 int
-gc (void)
+sweep (void)
 {
-        int count, sk, i;
-        if (!null_p(RTS)) {
-                sk = vector_length(RTS);
-                vector_length(RTS) = RTSp + 1;
-        }
-        for (i = 0; ROOTS[i]; i++)
-                mark(*ROOTS[i]);
-        for (i = SCHAR_MIN; i <= SCHAR_MAX; i++) {
-                mark(Small_Int[(unsigned char) i]);
-        }
-        if (!null_p(RTS))
-                vector_length(RTS) = sk;
+        int count, i;
         Cells_Free = NIL;
         count = 0;
         for (i = 0; i < Cells_Poolsize; i++) {
                 if (!mark_p(i)) {
+                        tag(i) = TAG_NONE;
                         cdr(i) = Cells_Free;
                         Cells_Free = i;
                         count++;
@@ -720,6 +729,23 @@ gc (void)
                 }
         }
         return count;
+}
+
+int
+gc (void)
+{
+        int sk, i;
+        if (!null_p(RTS)) {
+                sk = vector_length(RTS);
+                vector_length(RTS) = RTSp + 1;
+        }
+        for (i = 0; ROOTS[i]; i++)
+                mark(*ROOTS[i]);
+        for (i = SCHAR_MIN; i <= SCHAR_MAX; i++)
+                mark(Small_Int[(unsigned char) i]);
+        if (!null_p(RTS))
+                vector_length(RTS) = sk;
+        return sweep();
 }
 
 @ |vector| garbage collection works by using the |pair|s garbage
@@ -817,6 +843,11 @@ extern int RTS_Size, RTSp;
 
 @ @<Protected...@>=
 &CTS, &RTS, &VMS,
+
+@ @<Pre-init...@>=
+CTS = RTS = VMS = NIL;
+RTS_Size = 0;
+RTSp = -1;
 
 @ @<Func...@>=
 cell cts_pop (void);
@@ -1024,6 +1055,12 @@ void symbol_reify (cell);
 boolean symbol_same_p (cell, cell);
 cell symbol_steal (char *);
 
+@ @<Pre-init...@>=
+free(SYMBOL);
+SYMBOL = NULL;
+Symbol_Poolsize = Symbol_Free = 0;
+Symbol_Table = NIL;
+
 @ @c
 void
 symbol_expand (void)
@@ -1118,6 +1155,9 @@ accordingly.
 % TODO: need to verify that char casting works as I expect.
 
 @d fixint_p(p) (integer_p(p) && null_p(int_next(p)))
+@d smallint_p(p) (fixint_p(p)
+        && int_value(p) >= SCHAR_MIN
+        && int_value(p) <= SCHAR_MAX)
 @d int_value(p) ((int) (car(p)))
 @d int_next cdr
 @<Global var...@>=
@@ -1575,6 +1615,10 @@ extern int Ip;
 @ @<Protected...@>=
 &Acc, &Env, &Prog, &Prog_Main, &Root,
 
+@ @<Pre-init...@>=
+Acc = Env = Prog = Prog_Main = Root = NIL;
+Interrupt = Running = Ip = 0;
+
 @ The \LL/ virtual machine is initialised by calling the code
 snippets built into the |@<Global init...@>| section then constructing
 the the root |environment| in |Root|.
@@ -1626,7 +1670,7 @@ vm_init_imp (void)
         cell t;
         int i;
         primitive *n;
-        @<Pre-initialise |Small_Int|@>@;
+        @<Pre-initialise |Small_Int| \AM\ other gc-sensitive buffers@>@;
         @<Global init...@>@;
         Prog_Main = compile_main();
         i = 0;
@@ -1684,6 +1728,9 @@ int Fp = -1;
 
 @ @<Extern...@>=
 extern int Fp;
+
+@ @<Global init...@>=
+Fp = -1;
 
 @ Creating a |frame| is pushing the header items onto the stack.
 Entering it is changing the VM's registers that are now safe. This
@@ -2944,6 +2991,9 @@ void emit (cell);
 @ @<Protected...@>=
 &Compilation,
 
+@ @<Pre-init...@>=
+Compilation = NIL;
+
 @ @c
 void
 emit (cell bc)
@@ -4094,12 +4144,24 @@ extern cell Tmp_Test;
         &Tmp_Test,
 #endif
 
+@ @<Pre-init...@>=
+#ifdef LL_TEST
+        Tmp_Test = NIL;
+#endif
+
 @ Some tests need to examine a snapshot of the interpreter's run-time
 state which they do by calling {\it test!probe}.
 
+@d object_copy(o,d,p) object_copy_imp((o),(d),(p),0)
+@d object_copyref(o,d) object_copyref_imp((o),(d),0)
 @<Function dec...@>=
 void compile_testing_probe (cell, cell, boolean);
 void compile_testing_probe_app (cell, cell, boolean);
+boolean object_compare (char *, size_t, cell, boolean);
+int object_copy_imp (cell, char *, boolean, int);
+int object_copyref_imp (cell, cell *, int);
+size_t object_sizeof (cell);
+size_t object_sizeofref (cell);
 cell testing_build_probe (cell);
 
 @ @<Testing opcodes@>=
@@ -4149,6 +4211,116 @@ compile_testing_probe_app (cell op __unused,
 reference them.
 
 @c
+size_t
+object_sizeof (cell o)
+{
+        size_t s;
+        int i;
+        if (special_p(o))
+                return sizeof (char);
+        s = sizeof (char) + 2 * sizeof (cell);
+        if (acar_p(o))
+                s += object_sizeof(car(o));
+        if (acdr_p(o))
+                s += object_sizeof(cdr(o));
+        if (vector_p(o)) {
+                s += (vector_length(o) + VECTOR_HEAD) * sizeof (cell);
+                for (i = 0; i < vector_length(o); i++)
+                        s += object_sizeof(vector_ref(o, i));
+        }
+        return s;
+}
+
+int
+object_copy_imp (cell o,
+                 char *dst,
+                 boolean offset_p,
+                 int p)
+{
+        int i;
+        if (special_p(o))
+                dst[p++] = (char) o;
+        else {
+                bcopy(&tag(o), dst + p, sizeof (char));
+                p++;
+                if (!vector_p(o)) /* car is gc's index */
+                        bcopy(&car(o), dst + p, sizeof (cell));
+                else
+                        bzero(dst + p, sizeof (cell));
+                p += sizeof (cell);
+                if (!vector_p(o) || offset_p)
+                        bcopy(&cdr(o), dst + p, sizeof (cell));
+                else
+                        bzero(dst + p, sizeof (cell));
+                p += sizeof (cell);
+                if (acar_p(o))
+                        p = object_copy_imp(car(o), dst, offset_p, p);
+                if (acdr_p(o))
+                        p = object_copy_imp(cdr(o), dst, offset_p, p);
+                if (vector_p(o)) {
+                        bcopy(&(vector_ref(o, 0)) - VECTOR_HEAD, dst + p,
+                              sizeof (cell) * (vector_length(o) + VECTOR_HEAD));
+                        p += sizeof (cell) * (vector_length(o) + VECTOR_HEAD);
+                        for (i = 0; i < vector_length(o); i++)
+                                p = object_copy_imp(vector_ref(o, i), dst, offset_p, p);
+                }
+        }
+        return p;
+}
+
+boolean
+object_compare (char *buf1,
+                size_t len,
+                cell o2,
+                boolean offset_p)
+{
+        char *buf2;
+        boolean r;
+        if (object_sizeof(o2) != len)
+                return bfalse;
+        ERR_OOM_P(buf2 = malloc(len));
+        object_copy(o2, buf2, offset_p);
+        r = (bcmp(buf1, buf2, len) == 0) ? btrue : bfalse;
+        free(buf2);
+        return r;
+}
+
+size_t
+object_sizeofref (cell o)
+{
+        int i;
+        size_t s = 1;
+        if (special_p(o))
+                return s;
+        if (acar_p(o))
+                s += object_sizeofref(car(o));
+        if (acdr_p(o))
+                s += object_sizeofref(cdr(o));
+        if (vector_p(o))
+                for (i = 0; i < vector_length(o); i++)
+                        s += object_sizeofref(vector_ref(o, i));
+        return s;
+}
+
+int
+object_copyref_imp (cell o,
+                    cell *dst,
+                    int p)
+{
+        int i;
+        dst[p++] = o;
+        if (special_p(o))
+                return p;
+        if (acar_p(o))
+                p = object_copyref_imp(car(o), dst, p);
+        if (acdr_p(o))
+                p = object_copyref_imp(cdr(o), dst, p);
+        if (vector_p(o))
+                for (i = 0; i < vector_length(o); i++)
+                        p = object_copyref_imp(vector_ref(o, i), dst, p);
+        return p;
+}
+
 #define probe_push(n, o) do {             \
         vms_push(cons((o), NIL));         \
         vms_set(cons(sym(n), vms_ref())); \
@@ -4575,8 +4747,8 @@ getting that right.
 Chiefly there are two classes of inputs, whether or not |Cells_Poolsize|
 is 0, and whether allocation succeeds for each of the 3 attempts.
 
-\point 5. {\it What set of tests will trigger each behavior and validate
-each guarantee?}
+\point 5. {\it What set of tests will trigger each behavior and
+validate each guarantee?}
 
 Eight tests, four starting from no heap and four from a heap with
 data in it. One for success and one for each potentially failed
@@ -5057,7 +5229,1161 @@ llt_Grow_Vector_Pool__Full_Fail (void)
         return fix;
 }
 
-@*1 Garbage Collector.
+@*1 Garbage Collector. There are three parts to the garbage collector,
+each building on the last. The inner-most component is |mark| which
+searches the heap for any data which are in use.
+
+\point 1. {\it What is the contract fulfilled by the code under test?}
+
+\point 2. {\it What preconditions are required, and how are they
+enforced?}
+
+\point 3. {\it What postconditions are guaranteed?}
+
+Given a |cell|, it and any objects it refers to---recursively,
+including internal components of atoms---will have their mark flag
+raised. No other objects will be affected and no other changes will
+be made to the objects which are. The global constants (specials)
+are ignored.
+
+|mark|'s main complication is that it's a linear implementation of
+a recursive algorithm. It can't use any of the real stacks to keep
+track of the recursion so it uses the individual cells its scanning
+as an impromptu stack. This heap mutation needs to have no visible
+external effect despite mutating every |cell| that's considered.
+
+\point 4. {\it What example inputs trigger different behaviors?}
+
+Global constants and cells already marked vs. unmarked cells.
+Obviously different objects will be marked in their own way.
+
+Constants aside, the different types of object come in one of 5
+categories: pairs, vectors, atomic pairs, atomic lists (the car is
+opaque) and pure atoms (which are entirely opaque). These are
+referred to as P, V, A \AM\ L respectively.
+
+\point 5. {\it What set of tests will trigger each behavior and
+validate each guarantee?}
+
+A test for each type of object---P, V, A \AM\ L as well as
+globals---created without any nesting and one for each recursive
+combination up to a depth of 3.
+
+@(t/gc-mark.c@>=
+@<Unit test header@>@;
+
+enum llt_GC_Mark_flat {
+        LLT_GC_MARK_SIMPLE_ATOM,
+        LLT_GC_MARK_SIMPLE_LONG_ATOM,
+        LLT_GC_MARK_SIMPLE_PAIR,
+        LLT_GC_MARK_SIMPLE_VECTOR
+};
+
+enum llt_GC_Mark_recursion {
+        LLT_GC_MARK_RECURSIVE_PA,
+        LLT_GC_MARK_RECURSIVE_PL,
+        LLT_GC_MARK_RECURSIVE_PP,
+        LLT_GC_MARK_RECURSIVE_PV,
+        LLT_GC_MARK_RECURSIVE_PLL,
+        LLT_GC_MARK_RECURSIVE_VA,
+        LLT_GC_MARK_RECURSIVE_VL,
+        LLT_GC_MARK_RECURSIVE_VP,
+        LLT_GC_MARK_RECURSIVE_VV,
+        LLT_GC_MARK_RECURSIVE_VLL,
+        LLT_GC_MARK_RECURSIVE_LL,
+        LLT_GC_MARK_RECURSIVE_LLL,
+        LLT_GC_MARK_RECURSIVE_PPA,
+        LLT_GC_MARK_RECURSIVE_PPL,
+        LLT_GC_MARK_RECURSIVE_PPP,
+        LLT_GC_MARK_RECURSIVE_PPV,
+        LLT_GC_MARK_RECURSIVE_PVA,
+        LLT_GC_MARK_RECURSIVE_PVL,
+        LLT_GC_MARK_RECURSIVE_PVP,
+        LLT_GC_MARK_RECURSIVE_PVV,
+        LLT_GC_MARK_RECURSIVE_VPA,
+        LLT_GC_MARK_RECURSIVE_VPL,
+        LLT_GC_MARK_RECURSIVE_VPP,
+        LLT_GC_MARK_RECURSIVE_VPV,
+        LLT_GC_MARK_RECURSIVE_VVA,
+        LLT_GC_MARK_RECURSIVE_VVL,
+        LLT_GC_MARK_RECURSIVE_VVP,
+        LLT_GC_MARK_RECURSIVE_VVV
+};
+
+struct llt_Fixture {
+        LLT_FIXTURE_HEADER;
+        cell  safe;
+        char *copy;
+        size_t len;
+        boolean proper_pair_p;
+        enum llt_GC_Mark_recursion complex;
+        enum llt_GC_Mark_flat simplex;
+};
+
+@<Unit test body@>@;
+
+@<Unit test: garbage collector |mark|@>@;
+
+llt_fixture Test_Fixtures[] = {@|
+        llt_GC_Mark__Global,
+        llt_GC_Mark__Atom,
+        llt_GC_Mark__Long_Atom,
+        llt_GC_Mark__Pair,
+        llt_GC_Mark__Vector,
+        llt_GC_Mark__Recursive_P,
+        llt_GC_Mark__Recursive_V,
+        llt_GC_Mark__Recursive_L,
+        llt_GC_Mark__Recursive_PP,
+        llt_GC_Mark__Recursive_PV,
+        llt_GC_Mark__Recursive_VP,
+        llt_GC_Mark__Recursive_VV,
+        NULL@/
+};
+
+@ These tests work by serialising the object under test into a
+buffer before and after performing the test to check for changes,
+and recursively walking the data structure using \CEE/'s stack to
+look for the mark flag.
+
+@<Unit test: garbage collector |mark|@>=
+boolean
+llt_GC_Mark_is_marked_p (cell c)
+{
+        return special_p(c) || (mark_p(c)@|
+                && (!acar_p(c) || llt_GC_Mark_is_marked_p(car(c)))@|
+                && (!acdr_p(c) || llt_GC_Mark_is_marked_p(cdr(c))));
+}
+
+@ Of course after the mark phase of garbage collection live objects
+{\it have} been changed because that's the whole point so serialising
+the post-mark object as-is wouldn't work. Instead the flag is
+(recursively) lowered first reverting the only change that |mark|
+should have made.
+
+@<Unit test: garbage collector |mark|@>=
+void
+llt_GC_Mark_unmark_m (cell c)
+{
+        int i;
+        if (special_p(c)) return;
+        mark_clear(c);
+        if (acar_p(c)) llt_GC_Mark_unmark_m(car(c));
+        if (acdr_p(c)) llt_GC_Mark_unmark_m(cdr(c));
+        if (vector_p(c))
+                for (i = 0; i < vector_length(c); i++)@/
+                        llt_GC_Mark_unmark_m(vector_ref(c, i));
+}
+
+@ Objects need to be created in various combinations to create the
+recursive structures to test.
+
+@d llt_GC_Mark_mkatom sym
+@<Unit test: garbage collector |mark|@>=
+cell
+llt_GC_Mark_mklong (int x,
+                    int y)
+{
+        cell r;
+        vms_push(int_new(y));
+        r = int_new(x);
+        cdr(r) = vms_pop();
+        return r;
+}
+
+@ @<Unit test: garbage collector |mark|@>=
+cell
+llt_GC_Mark_mklonglong (int x,
+                        int y,
+                        int z)
+{
+        cell r;
+        vms_push(int_new(z));
+        r = int_new(y);
+        cdr(r) = vms_pop();
+        vms_push(r);
+        r = int_new(x);
+        cdr(r) = vms_pop();
+        return r;
+}
+
+@ @<Unit test: garbage collector |mark|@>=
+cell
+llt_GC_Mark_mkpair (boolean proper_p)
+{
+        cell r = cons(VOID, UNDEFINED);
+        if (proper_p)
+                cdr(r) = NIL;
+        return r;
+}
+
+@ @<Unit test: garbage collector |mark|@>=
+cell
+llt_GC_Mark_mkvector (void)
+{
+        cell r;
+        int i, j;
+        r = vector_new_imp(abs(UNDEFINED), 0, NIL);
+        for (i = 0, j = -1; j >= UNDEFINED; i++, j--)
+                vector_ref(r, i) = j;
+        return r;
+}
+
+@ Preparing and running the tests. This is where the object under
+test (created below) gets serialised.
+
+@<Unit test: garbage collector |mark|@>=
+void
+llt_GC_Mark_prepare (llt_Fixture *fix)
+{
+        fix->len = object_sizeof(fix->safe);
+        ERR_OOM_P(fix->copy = malloc(fix->len));
+        object_copy(fix->safe, fix->copy, btrue);
+}
+
+@ @<Unit test: garbage collector |mark|@>=
+void
+llt_GC_Mark_destroy (llt_Fixture *fix)
+{
+        free(fix->copy);
+}
+
+@ @<Unit test: garbage collector |mark|@>=
+void
+llt_GC_Mark_act (llt_Fixture *fix)
+{
+        mark(fix->safe);
+}
+
+@ @<Unit test: garbage collector |mark|@>=
+boolean
+llt_GC_Mark_test (llt_Fixture *fix)
+{
+        char buf[TEST_BUFSIZE];
+        boolean ok;
+        ok = tap_ok(llt_GC_Mark_is_marked_p(fix->safe),
+                fpmsgf("the object is fully marked"));
+        llt_GC_Mark_unmark_m(fix->safe);
+        tap_again(ok, object_compare(fix->copy, fix->len, fix->safe, btrue),
+                fpmsgf("the object is unchanged"));
+        return ok;
+}
+
+@ @<Unit test: garbage collector |mark|@>=
+llt_Fixture *
+llt_GC_Mark_fix (llt_Fixture *fix,
+                 const char *name)
+{
+        fix->name = name;
+        fix->prepare = llt_GC_Mark_prepare;
+        fix->destroy = llt_GC_Mark_destroy;
+        fix->act = llt_GC_Mark_act;
+        fix->test = llt_GC_Mark_test;
+        fix->safe = NIL;
+        return fix;
+}
+
+@ This defines 6 test cases, one for each global object, which need
+no further preparation.
+
+@<Unit test: garbage collector |mark|@>=
+#define mkfix(n,o) do {                     \
+        llt_GC_Mark_fix(f + (n), __func__); \
+        f[(n)].suffix = #o;                 \
+        f[(n)].safe = (o);                  \
+} while (0)
+llt_Fixture *
+llt_GC_Mark__Global (void)
+{
+        llt_Fixture *f = llt_alloc(6);
+        mkfix(0, NIL);
+        mkfix(1, FALSE);
+        mkfix(2, TRUE);
+        mkfix(3, END_OF_FILE);
+        mkfix(4, VOID);
+        mkfix(5, UNDEFINED);
+        return f;
+}
+#undef mkfix
+
+@ Four test cases test each of the other object types without
+triggering recursion.
+
+@<Unit test: garbage collector |mark|@>=
+void
+llt_GC_Mark__PLAV_prepare (llt_Fixture *fix)
+{
+        switch (fix->simplex) {
+        case LLT_GC_MARK_SIMPLE_ATOM:@/
+                fix->safe = llt_GC_Mark_mkatom("forty-two");
+                break;
+        case LLT_GC_MARK_SIMPLE_LONG_ATOM:@/
+                fix->safe = int_new(42); /* nb. doesn't use mklong */
+                break;
+        case LLT_GC_MARK_SIMPLE_PAIR:@/
+                fix->safe = llt_GC_Mark_mkpair(fix->proper_pair_p);
+                break;
+        case LLT_GC_MARK_SIMPLE_VECTOR:@/
+                fix->safe = llt_GC_Mark_mkvector();
+                break;
+        }
+        llt_GC_Mark_prepare(fix);
+}
+
+@ @<Unit test: garbage collector |mark|@>=
+llt_Fixture *
+llt_GC_Mark__Atom (void)
+{
+        llt_Fixture *f = llt_alloc(1);
+        llt_GC_Mark_fix(f, __func__);
+        f->simplex = LLT_GC_MARK_SIMPLE_ATOM;
+        f->prepare = llt_GC_Mark__PLAV_prepare;
+        return f;
+}
+
+@ @<Unit test: garbage collector |mark|@>=
+llt_Fixture *
+llt_GC_Mark__Long_Atom (void)
+{
+        llt_Fixture *f = llt_alloc(1);
+        llt_GC_Mark_fix(f, __func__);
+        f->simplex = LLT_GC_MARK_SIMPLE_LONG_ATOM;
+        f->prepare = llt_GC_Mark__PLAV_prepare;
+        return f;
+}
+
+@ @<Unit test: garbage collector |mark|@>=
+llt_Fixture *
+llt_GC_Mark__Pair (void)
+{
+        llt_Fixture *f = llt_alloc(2);
+        llt_GC_Mark_fix(f + 0, __func__);
+        llt_GC_Mark_fix(f + 1, __func__);
+        f[0].simplex = f[1].simplex = LLT_GC_MARK_SIMPLE_PAIR;
+        f[0].prepare = f[1].prepare = llt_GC_Mark__PLAV_prepare;
+        f[0].proper_pair_p = btrue;
+        return f;
+}
+
+@ @<Unit test: garbage collector |mark|@>=
+llt_Fixture *
+llt_GC_Mark__Vector (void)
+{
+        llt_Fixture *f = llt_alloc(1);
+        llt_GC_Mark_fix(f, __func__);
+        f->simplex = LLT_GC_MARK_SIMPLE_VECTOR;
+        f->prepare = llt_GC_Mark__PLAV_prepare;
+        return f;
+}
+
+@ Preparing the recursive test cases involves a lot of repetetive
+and methodical code.
+
+@<Unit test: garbage collector |mark|@>=
+void
+llt_GC_Mark__Recursive_prepare_imp (llt_Fixture *fix,
+                                    enum llt_GC_Mark_recursion c)
+{
+        switch (c) {
+                @<Unit test part: prepare plain pairs@>@;
+                @<Unit test part: prepare plain vectors@>@;
+                @<Unit test part: prepare atomic lists@>@;
+                @<Unit test part: prepare pairs in pairs@>@;
+                @<Unit test part: prepare vectors in pairs@>@;
+                @<Unit test part: prepare pairs in vectors@>@;
+                @<Unit test part: prepare vectors in vectors@>@;
+        }
+}
+
+void
+llt_GC_Mark__Recursive_prepare (llt_Fixture *fix)
+{
+        llt_GC_Mark__Recursive_prepare_imp(fix, fix->complex);
+        Tmp_Test = NIL;
+        llt_GC_Mark_prepare(fix);
+}
+
+@ @<Unit test part: prepare plain pairs@>=
+case LLT_GC_MARK_RECURSIVE_PA:
+        fix->safe = llt_GC_Mark_mkpair(bfalse);
+        car(fix->safe) = llt_GC_Mark_mkatom("forty-two");
+        cdr(fix->safe) = llt_GC_Mark_mkatom("twoty-four");
+        break;
+case LLT_GC_MARK_RECURSIVE_PL:
+        fix->safe = llt_GC_Mark_mkpair(bfalse);
+        car(fix->safe) = llt_GC_Mark_mklong(2048, 42);
+        cdr(fix->safe) = llt_GC_Mark_mklong(8042, 24);
+        break;
+case LLT_GC_MARK_RECURSIVE_PP:
+        fix->safe = llt_GC_Mark_mkpair(bfalse);
+        car(fix->safe) = llt_GC_Mark_mkpair(btrue);
+        cdr(fix->safe) = llt_GC_Mark_mkpair(bfalse);
+        break;
+case LLT_GC_MARK_RECURSIVE_PV:
+        fix->safe = llt_GC_Mark_mkpair(bfalse);
+        car(fix->safe) = llt_GC_Mark_mkvector();
+        cdr(fix->safe) = llt_GC_Mark_mkvector();
+        break;
+case LLT_GC_MARK_RECURSIVE_PLL:
+        fix->safe = llt_GC_Mark_mkpair(bfalse);
+        car(fix->safe) = llt_GC_Mark_mklonglong(1024, 2048, 42);
+        cdr(fix->safe) = llt_GC_Mark_mklonglong(4201, 4820, 24);
+        break;
+
+@ @<Unit test part: prepare plain vectors@>=
+case LLT_GC_MARK_RECURSIVE_VA:
+        fix->safe = llt_GC_Mark_mkvector();
+        vector_ref(fix->safe, 4) = llt_GC_Mark_mkatom("42");
+        vector_ref(fix->safe, 2) = llt_GC_Mark_mkatom("24");
+        break;
+case LLT_GC_MARK_RECURSIVE_VL:
+        fix->safe = llt_GC_Mark_mkvector();
+        vector_ref(fix->safe, 4) = llt_GC_Mark_mklong(2048, 42);
+        vector_ref(fix->safe, 2) = llt_GC_Mark_mklong(8042, 24);
+        break;
+case LLT_GC_MARK_RECURSIVE_VP:
+        fix->safe = llt_GC_Mark_mkvector();
+        vector_ref(fix->safe, 4) = llt_GC_Mark_mkpair(btrue);
+        vector_ref(fix->safe, 2) = llt_GC_Mark_mkpair(bfalse);
+        break;
+case LLT_GC_MARK_RECURSIVE_VV:
+        fix->safe = llt_GC_Mark_mkvector();
+        vector_ref(fix->safe, 4) = llt_GC_Mark_mkvector();
+        vector_ref(fix->safe, 2) = llt_GC_Mark_mkvector();
+        break;
+case LLT_GC_MARK_RECURSIVE_VLL:
+        fix->safe = llt_GC_Mark_mkvector();
+        vector_ref(fix->safe, 4) = llt_GC_Mark_mklonglong(1024, 2048, 42);
+        vector_ref(fix->safe, 2) = llt_GC_Mark_mklonglong(4201, 4820, 24);
+        break;
+
+@ @<Unit test part: prepare atomic lists@>=
+case LLT_GC_MARK_RECURSIVE_LL:
+        fix->safe = llt_GC_Mark_mklong(1024, 42);
+        break;
+case LLT_GC_MARK_RECURSIVE_LLL:
+        fix->safe = llt_GC_Mark_mklonglong(1024, 2048, 42);
+        break;
+
+@ @<Unit test part: prepare pairs in pairs@>=
+case LLT_GC_MARK_RECURSIVE_PPA:
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_PA);
+        Tmp_Test = fix->safe;
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_PA);
+        fix->safe = cons(fix->safe, Tmp_Test);
+        break;
+case LLT_GC_MARK_RECURSIVE_PPL:
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_PL);
+        Tmp_Test = fix->safe;
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_PL);
+        fix->safe = cons(fix->safe, Tmp_Test);
+        break;
+case LLT_GC_MARK_RECURSIVE_PPP:
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_PP);
+        Tmp_Test = fix->safe;
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_PP);
+        fix->safe = cons(fix->safe, Tmp_Test);
+        break;
+case LLT_GC_MARK_RECURSIVE_PPV:
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_PV);
+        Tmp_Test = fix->safe;
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_PV);
+        fix->safe = cons(fix->safe, Tmp_Test);
+        break;
+
+@ @<Unit test part: prepare vectors in pairs@>=
+case LLT_GC_MARK_RECURSIVE_PVA:
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_VA);
+        Tmp_Test = fix->safe;
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_VA);
+        fix->safe = cons(fix->safe, Tmp_Test);
+        break;
+case LLT_GC_MARK_RECURSIVE_PVL:
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_VL);
+        Tmp_Test = fix->safe;
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_VL);
+        fix->safe = cons(fix->safe, Tmp_Test);
+        break;
+case LLT_GC_MARK_RECURSIVE_PVP:
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_VP);
+        Tmp_Test = fix->safe;
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_VP);
+        fix->safe = cons(fix->safe, Tmp_Test);
+        break;
+case LLT_GC_MARK_RECURSIVE_PVV:
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_VV);
+        Tmp_Test = fix->safe;
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_VV);
+        fix->safe = cons(fix->safe, Tmp_Test);
+        break;
+
+@ @<Unit test part: prepare pairs in vectors@>=
+case LLT_GC_MARK_RECURSIVE_VPA:
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_PA);
+        Tmp_Test = fix->safe;
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_PA);
+        Tmp_Test = cons(fix->safe, Tmp_Test);
+        fix->safe = llt_GC_Mark_mkvector();
+        vector_ref(fix->safe, 4) = car(Tmp_Test);
+        vector_ref(fix->safe, 2) = cdr(Tmp_Test);
+        break;
+case LLT_GC_MARK_RECURSIVE_VPL:
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_PL);
+        Tmp_Test = fix->safe;
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_PL);
+        Tmp_Test = cons(fix->safe, Tmp_Test);
+        fix->safe = llt_GC_Mark_mkvector();
+        vector_ref(fix->safe, 4) = car(Tmp_Test);
+        vector_ref(fix->safe, 2) = cdr(Tmp_Test);
+        break;
+case LLT_GC_MARK_RECURSIVE_VPP:
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_PP);
+        Tmp_Test = fix->safe;
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_PP);
+        Tmp_Test = cons(fix->safe, Tmp_Test);
+        fix->safe = llt_GC_Mark_mkvector();
+        vector_ref(fix->safe, 4) = car(Tmp_Test);
+        vector_ref(fix->safe, 2) = cdr(Tmp_Test);
+        break;
+case LLT_GC_MARK_RECURSIVE_VPV:
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_PV);
+        Tmp_Test = fix->safe;
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_PV);
+        Tmp_Test = cons(fix->safe, Tmp_Test);
+        fix->safe = llt_GC_Mark_mkvector();
+        vector_ref(fix->safe, 4) = car(Tmp_Test);
+        vector_ref(fix->safe, 2) = cdr(Tmp_Test);
+        break;
+
+@ @<Unit test part: prepare vectors in vectors@>=
+case LLT_GC_MARK_RECURSIVE_VVA:
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_VA);
+        Tmp_Test = fix->safe;
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_VA);
+        Tmp_Test = cons(fix->safe, Tmp_Test);
+        fix->safe = llt_GC_Mark_mkvector();
+        vector_ref(fix->safe, 4) = car(Tmp_Test);
+        vector_ref(fix->safe, 2) = cdr(Tmp_Test);
+        break;
+case LLT_GC_MARK_RECURSIVE_VVL:
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_VL);
+        Tmp_Test = fix->safe;
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_VL);
+        Tmp_Test = cons(fix->safe, Tmp_Test);
+        fix->safe = llt_GC_Mark_mkvector();
+        vector_ref(fix->safe, 4) = car(Tmp_Test);
+        vector_ref(fix->safe, 2) = cdr(Tmp_Test);
+        break;
+case LLT_GC_MARK_RECURSIVE_VVP:
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_VP);
+        Tmp_Test = fix->safe;
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_VP);
+        Tmp_Test = cons(fix->safe, Tmp_Test);
+        fix->safe = llt_GC_Mark_mkvector();
+        vector_ref(fix->safe, 4) = car(Tmp_Test);
+        vector_ref(fix->safe, 2) = cdr(Tmp_Test);
+        break;
+case LLT_GC_MARK_RECURSIVE_VVV:
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_VV);
+        Tmp_Test = fix->safe;
+        llt_GC_Mark__Recursive_prepare_imp(fix, LLT_GC_MARK_RECURSIVE_VV);
+        Tmp_Test = cons(fix->safe, Tmp_Test);
+        fix->safe = llt_GC_Mark_mkvector();
+        vector_ref(fix->safe, 4) = car(Tmp_Test);
+        vector_ref(fix->safe, 2) = cdr(Tmp_Test);
+        break;
+
+@ @d llt_GC_Mark_recfix(f, n, c) do {
+        llt_GC_Mark_fix(f + (n), __func__);
+        f[(n)].prepare = llt_GC_Mark__Recursive_prepare;
+        f[(n)].complex = (c);
+        f[(n)].suffix = #c;
+} while (0)
+@<Unit test: garbage collector |mark|@>=
+llt_Fixture *
+llt_GC_Mark__Recursive_P (void)
+{
+        llt_Fixture *f = llt_alloc(5);
+        llt_GC_Mark_recfix(f, 0, LLT_GC_MARK_RECURSIVE_PA);
+        llt_GC_Mark_recfix(f, 1, LLT_GC_MARK_RECURSIVE_PL);
+        llt_GC_Mark_recfix(f, 2, LLT_GC_MARK_RECURSIVE_PP);
+        llt_GC_Mark_recfix(f, 3, LLT_GC_MARK_RECURSIVE_PV);
+        llt_GC_Mark_recfix(f, 4, LLT_GC_MARK_RECURSIVE_PLL);
+        return f;
+}
+
+@ @<Unit test: garbage collector |mark|@>=
+llt_Fixture *
+llt_GC_Mark__Recursive_V (void)
+{
+        llt_Fixture *f = llt_alloc(5);
+        llt_GC_Mark_recfix(f, 0, LLT_GC_MARK_RECURSIVE_VA);
+        llt_GC_Mark_recfix(f, 1, LLT_GC_MARK_RECURSIVE_VL);
+        llt_GC_Mark_recfix(f, 2, LLT_GC_MARK_RECURSIVE_VP);
+        llt_GC_Mark_recfix(f, 3, LLT_GC_MARK_RECURSIVE_VV);
+        llt_GC_Mark_recfix(f, 4, LLT_GC_MARK_RECURSIVE_VLL);
+        return f;
+}
+
+@ @<Unit test: garbage collector |mark|@>=
+llt_Fixture *
+llt_GC_Mark__Recursive_L (void)
+{
+        llt_Fixture *f = llt_alloc(2);
+        llt_GC_Mark_recfix(f, 0, LLT_GC_MARK_RECURSIVE_LL);
+        llt_GC_Mark_recfix(f, 1, LLT_GC_MARK_RECURSIVE_LLL);
+        return f;
+}
+
+@ @<Unit test: garbage collector |mark|@>=
+llt_Fixture *
+llt_GC_Mark__Recursive_PP (void)
+{
+        llt_Fixture *f = llt_alloc(4);
+        llt_GC_Mark_recfix(f, 0, LLT_GC_MARK_RECURSIVE_PPA);
+        llt_GC_Mark_recfix(f, 1, LLT_GC_MARK_RECURSIVE_PPL);
+        llt_GC_Mark_recfix(f, 2, LLT_GC_MARK_RECURSIVE_PPP);
+        llt_GC_Mark_recfix(f, 3, LLT_GC_MARK_RECURSIVE_PPV);
+        return f;
+}
+
+@ @<Unit test: garbage collector |mark|@>=
+llt_Fixture *
+llt_GC_Mark__Recursive_PV (void)
+{
+        llt_Fixture *f = llt_alloc(4);
+        llt_GC_Mark_recfix(f, 0, LLT_GC_MARK_RECURSIVE_PVA);
+        llt_GC_Mark_recfix(f, 1, LLT_GC_MARK_RECURSIVE_PVL);
+        llt_GC_Mark_recfix(f, 2, LLT_GC_MARK_RECURSIVE_PVP);
+        llt_GC_Mark_recfix(f, 3, LLT_GC_MARK_RECURSIVE_PVV);
+        return f;
+}
+
+@ @<Unit test: garbage collector |mark|@>=
+llt_Fixture *
+llt_GC_Mark__Recursive_VP (void)
+{
+        llt_Fixture *f = llt_alloc(4);
+        llt_GC_Mark_recfix(f, 0, LLT_GC_MARK_RECURSIVE_VPA);
+        llt_GC_Mark_recfix(f, 1, LLT_GC_MARK_RECURSIVE_VPL);
+        llt_GC_Mark_recfix(f, 2, LLT_GC_MARK_RECURSIVE_VPP);
+        llt_GC_Mark_recfix(f, 3, LLT_GC_MARK_RECURSIVE_VPV);
+        return f;
+}
+
+@ @<Unit test: garbage collector |mark|@>=
+llt_Fixture *
+llt_GC_Mark__Recursive_VV (void)
+{
+        llt_Fixture *f = llt_alloc(4);
+        llt_GC_Mark_recfix(f, 0, LLT_GC_MARK_RECURSIVE_VVA);
+        llt_GC_Mark_recfix(f, 1, LLT_GC_MARK_RECURSIVE_VVL);
+        llt_GC_Mark_recfix(f, 2, LLT_GC_MARK_RECURSIVE_VVP);
+        llt_GC_Mark_recfix(f, 3, LLT_GC_MARK_RECURSIVE_VVV);
+        return f;
+}
+
+@*2 Sweep.
+
+\point 1. {\it What is the contract fulfilled by the code under test?}
+
+All cells which are marked will become unmarked and otherwise
+unchanged. All other cells will be on the free list (in an insignificant
+order). The size of the free list will be returned.
+
+\point 2. {\it What preconditions are required, and how are they
+enforced?}
+
+The pool need not have been initialised in which case the free list
+and return value are |NIL| and 0 respectively. Live objects should be
+already marked for which we define |llt_GC_Sweep_mark_m| which also
+counts the size of the object being marked.
+
+\point 3. {\it What postconditions are guaranteed?}
+
+The |car| content of a cell put into the free list is unchanged but
+this doesn't matter.
+
+\point 4. {\it What example inputs trigger different behaviors?}
+
+Exactly 2: The size of the pool and the set of marked cells.
+
+\point 5. {\it What set of tests will trigger each behavior and
+validate each guarantee?}
+
+There are three tests. The simplest is to verify that |sweep| is
+effectively a no-op when there is no pool. The other two both prepare
+a dud object which should be returned to the free list and test
+whether |sweep| works correctly both with and without a live object.
+
+@(t/gc-sweep.c@>=
+@<Unit test header@>@;
+
+struct llt_Fixture {
+        LLT_FIXTURE_HEADER;
+        boolean preinit_p;
+        cell safe;
+        cell *safe_buf;
+        size_t expect;
+        int ret_val;
+};
+
+@<Unit test body@>@;
+
+@<Unit test: garbage collector |sweep|@>@;
+
+llt_fixture Test_Fixtures[] = {@|
+        llt_GC_Sweep__Empty_Pool,
+        llt_GC_Sweep__Used_Pool,
+        NULL@/
+};
+
+@ @<Unit test: garbage collector |sweep|@>=
+size_t
+llt_GC_Sweep_mark_m (cell c)
+{
+        int i;
+        size_t count = 0;
+        if (special_p(c)) return 0;
+        mark_set(c);
+        count++;
+        if (acar_p(c)) count += llt_GC_Sweep_mark_m(car(c));
+        if (acdr_p(c)) count += llt_GC_Sweep_mark_m(cdr(c));
+        if (vector_p(c))
+                for (i = 0; i < vector_length(c); i++)@/
+                        count += llt_GC_Sweep_mark_m(vector_ref(c, i));
+        return count;
+}
+
+@ To test |sweep| when there is no pool there's no need to actually
+remove the pool. In other cases a few cells are consumed from the
+free list and ignored.
+
+@<Unit test: garbage collector |sweep|@>=
+void
+llt_GC_Sweep_prepare (llt_Fixture *fix)
+{
+        if (fix->preinit_p) {
+                Cells_Poolsize = 0;
+                Cells_Free = UNDEFINED;
+                return;
+        }
+        vms_push(cons(NIL, NIL));
+        cons(NIL, vms_pop());
+}
+
+@ The VM is fully reset after every test.
+
+@<Unit test: garbage collector |sweep|@>=
+void
+llt_GC_Sweep_destroy (llt_Fixture *fix __unused)
+{
+        free(fix->safe_buf);
+        vm_init_imp();
+}
+
+@ @<Unit test: garbage collector |sweep|@>=
+void
+llt_GC_Sweep_act (llt_Fixture *fix)
+{
+        fix->ret_val = sweep();
+}
+
+@ @<Unit test: garbage collector |sweep|@>=
+boolean
+llt_GC_Sweep_test (llt_Fixture *fix)
+{
+        char buf[TEST_BUFSIZE];
+        cell f;
+        boolean ok, mark_ok_p, free_ok_p;
+        int i, rem;
+        rem = Cells_Poolsize - fix->expect;
+        ok = tap_ok(fix->ret_val == rem,
+                fpmsgf("sweep returns the number of free cells (%d)", rem));
+        @#
+        i = 0;
+        for (f = Cells_Free; !null_p(f); f = cdr(f))@/
+                i++;
+        tap_more(ok, i == rem,
+                fpmsgf("the number of free cells is correct (%d)", rem));
+        @#
+        mark_ok_p = btrue;
+        for (i = 0; i < (int) fix->expect; i++)
+                if (mark_p(fix->safe_buf[i]))@/
+                        mark_ok_p = bfalse;
+        tap_more(ok, mark_ok_p, fpmsgf("the cells are unmarked"));
+        @#
+        free_ok_p = btrue;
+        for (f = Cells_Free; !null_p(f); f = cdr(f))
+                for (i = 0; i < (int) fix->expect; i++)
+                        if (fix->safe_buf[i] == f)@/
+                                free_ok_p = bfalse;
+        tap_more(ok, mark_ok_p, fpmsgf("the used cells are not in the free list"));
+        @#
+        return ok;
+}
+
+@ @<Unit test: garbage collector |sweep|@>=
+llt_Fixture *
+llt_GC_Sweep_fix (llt_Fixture *fix,
+                  const char *name)
+{
+        fix->name = name;
+        fix->prepare = llt_GC_Sweep_prepare;
+        fix->destroy = llt_GC_Sweep_destroy;
+        fix->act = llt_GC_Sweep_act;
+        fix->test = llt_GC_Sweep_test;
+        return fix;
+}
+
+@ @<Unit test: garbage collector |sweep|@>=
+llt_Fixture *
+llt_GC_Sweep__Empty_Pool (void)
+{
+        llt_Fixture *f = llt_alloc(2);
+        llt_GC_Sweep_fix(f + 0, __func__);
+        llt_GC_Sweep_fix(f + 1, __func__);
+        f[0].preinit_p = btrue;
+        f[0].suffix = "no pool";
+        f[1].suffix = "unused";
+        return f;
+}
+
+@ References to the cells which make up the object are saved in
+|fix->safe_buf| to check that they were not put on the free list.
+
+@<Unit test: garbage collector |sweep|@>=
+void
+llt_GC_Sweep__Used_Pool_prepare (llt_Fixture *fix)
+{
+        fix->safe = cons(VOID, UNDEFINED);
+        vms_push(fix->safe);
+        fix->expect = llt_GC_Sweep_mark_m(vms_ref());
+        ERR_OOM_P(fix->safe_buf = malloc(fix->expect));
+        object_copyref(fix->safe, fix->safe_buf);
+        llt_GC_Sweep_prepare(fix);
+        vms_pop();
+}
+
+@ @<Unit test: garbage collector |sweep|@>=
+llt_Fixture *
+llt_GC_Sweep__Used_Pool (void)
+{
+        llt_Fixture *f = llt_alloc(1);
+        llt_GC_Sweep_fix(f + 0, __func__);
+        f[0].prepare = llt_GC_Sweep__Used_Pool_prepare;
+        return f;
+}
+
+@*2 Vectors.
+
+\point 1. {\it What is the contract fulfilled by the code under test?}
+
+|vector| objects which are not live (pointed at by something in
+|ROOTS|) will have their |tag| changed to |TAG_NONE| and their cdr
+n\'ee offset changed to a pointer in the free list, as will all
+their contents.
+
+Live |vector|s cell pointer, length and contents are unchanged. The
+offset will be reduced by the (full) size of any unused |vector|s
+prior to it in |VECTOR|.
+
+The number of free cells in |VECTOR| is returned.
+
+\point 2. {\it What preconditions are required, and how are they
+enforced?}
+
+Used vectors must be pointed to from something in |ROOTS|. They
+will be pushed into |VMS|.
+
+The linear nature of |vector_new| is taken advantage of to create
+the holes in the |VECTOR| buffer that |gc_vectors| must defragment.
+
+All other aspects of the garbage collector are assumed to work
+correctly.
+
+\point 3. {\it What postconditions are guaranteed?}
+
+The VM is fully reset after each test so that they begin with
+|VECTOR| in a clean state.
+
+\point 4. {\it What example inputs trigger different behaviors?}
+
+The only things to affect the way |vector| garbage collection works
+is whether or not each vector is live and where they exist in memory
+in relation to one another, ie. whether unused vectors will leave
+holes in |VECTOR| after collection.
+
+\point 5. {\it What set of tests will trigger each behavior and
+validate each guarantee?}
+
+The |VECTOR| buffer will be packed with live/unused objects in
+various arrangements.
+
+@d LLT_GC_VECTOR__SIZE "2718281828459"
+@d LLT_GC_VECTOR__SHAPE "GNS"
+@(t/gc-vector.c@>=
+@<Unit test header@>@;
+
+struct llt_Fixture {
+        LLT_FIXTURE_HEADER;
+        const char *pattern;
+        int ret_val;
+        size_t safe_bufsize;
+        size_t safe_size;
+        cell *cell_buf;
+        cell *offset_buf;
+        char *safe_buf;
+        size_t *size_buf;
+        size_t unsafe_bufsize;
+        cell *unsafe_buf;
+};
+
+@<Unit test body@>@;
+
+@<Unit test: garbage collector |gc_vector|@>@;
+
+llt_fixture Test_Fixtures[] = {@|
+        llt_GC_Vector__All,
+        NULL@/
+};
+
+@ These tests are highly repetetive so the |vector|s defined by the
+fixture are created programmatically according to the pattern in
+|fix->pattern| which is a simple language of \.{L} \AM\ \.{U}
+characters.
+
+Each vector is created by taking a character from the pattern and
+|LLT_GC_VECTOR__SIZE| in turn to decide on the size of the vector
+and whether it is live or unused. |LLT_GC_VECTOR__SHAPE| is then
+cycled through to populate each |vector| with a variety of data.
+
+Live |vector|s are pushed onto |VMS| to keep them safe from collection.
+Vectors which will be considered unused are pushed onto |CTS| to
+keep them safe from collection while the fixture is being prepared.
+
+@<Unit test: garbage collector |gc_vector|@>=
+/* There are too many one-letter variables in this function which then
+   get reused */
+void
+llt_GC_Vector_prepare (llt_Fixture *fix)
+{
+        cell g, v;
+        char buf[TEST_BUFSIZE], *p, *s, *t;
+        int i, n, z;
+        if (!fix->pattern)
+                fix->pattern = "L";
+        g = NIL;
+        n = SCHAR_MAX;
+        s = LLT_GC_VECTOR__SIZE;
+        t = LLT_GC_VECTOR__SHAPE;
+        for (p = (char *) fix->pattern; *p; p++) {
+                if (*s == '\0')
+                        s = LLT_GC_VECTOR__SIZE;
+                @<Unit test part: build a ``random'' |vector|@>@;
+                if (*p == 'L') {
+                        @<Unit test part: serialise a live |vector| into the fixture@>@;
+                        vms_push(v);
+                }@+ else@/
+                        cts_push(v);
+        }
+        @<Unit test part: complete live |vector| serialisation@>@;
+        @<Unit test part: save unused |vector| references@>@;
+        cts_reset();
+}
+
+@ Each time a global variable is requested |g| is decremented,
+cycling from |NIL| down to |UNDEFINED|. Each new number and symbol
+is also unique using a counter |n| that starts high enough to create
+numbers not protected by |Small_Int|.
+
+@<Unit test part: build a ``random'' |vector|@>=
+v = vector_new((z = *s++ - '0'), NIL);
+for (i = 0; i < z; i++) {
+        if (*t == '\0')
+                t = LLT_GC_VECTOR__SHAPE;
+        switch (*t++) {
+        case 'G':@/
+                vector_ref(v, i) = g--;
+                if (g < UNDEFINED)
+                        g = NIL;
+                break;
+        case 'N':@/
+                vector_ref(v, i) = int_new(n += 42);
+                break;
+        case 'S':@/
+                snprintf(buf, TEST_BUFSIZE, "testing-%d", n += 42);
+                vector_ref(v, i) = sym(buf);
+                break;
+        }
+}
+
+@ The offset of a |vector| may change if there are unused |vector|s
+to collect so it's saved into |fix->offset_buf| instead and the
+live |vector|s are serialised without recording it.
+
+@<Unit test part: serialise a live |vector| into the fixture@>=
+fix->safe_size++;
+fix->cell_buf = reallocarray(fix->cell_buf,
+        fix->safe_size, sizeof (cell));
+fix->offset_buf = reallocarray(fix->offset_buf,
+        fix->safe_size, sizeof (cell));
+fix->size_buf = reallocarray(fix->size_buf,
+        fix->safe_size, sizeof (size_t));
+fix->cell_buf[fix->safe_size - 1] = v;
+fix->offset_buf[fix->safe_size - 1] = vector_offset(v);
+fix->safe_bufsize +=
+        fix->size_buf[fix->safe_size - 1] = object_sizeof(v);
+
+@ The list of live objects saved in |VMS| is reversed so that the
+order matches that in |fix->pattern| then they are serialised
+sequentially into |fix->safe_buf|.
+
+@<Unit test part: complete live |vector| serialisation@>=
+fix->safe_buf = calloc(fix->safe_bufsize, sizeof (char));
+VMS = list_reverse_m(VMS, btrue);
+n = 0;
+for (v = VMS; !null_p(v); v = cdr(v))@/
+        n += object_copy(car(v), fix->safe_buf + n, bfalse);
+
+@ Unused objects don't need to be serialised; their cell references
+only are saved to verify that they have been returned to the free
+list.
+
+@<Unit test part: save unused |vector| references@>=
+fix->unsafe_bufsize = 0;
+for (v = CTS; !null_p(v); v = cdr(v))@/
+        fix->unsafe_bufsize += object_sizeofref(car(v));
+fix->unsafe_buf = calloc(fix->unsafe_bufsize, sizeof (cell));
+i = 0;
+for (v = CTS; !null_p(v); v = cdr(v))@/
+        i += object_copyref(car(v), fix->unsafe_buf + i);
+
+@ @<Unit test: garbage collector |gc_vector|@>=
+boolean
+llt_GC_Vector_test (llt_Fixture *fix)
+{
+        char buf[TEST_BUFSIZE], *p, *s;
+        boolean ok, liveok, freeok, tagok, *freelist;
+        int delta, live, serial, unused, f, i;
+        cell j;
+        freelist = calloc(Cells_Poolsize, sizeof (boolean));
+        for (j = Cells_Free; !null_p(j); j = cdr(j))
+                freelist[j] = btrue;
+        delta = live = serial = unused = 0;
+        s = LLT_GC_VECTOR__SIZE;
+        ok = btrue;
+        for (i = 0, p = (char *) fix->pattern; *p; i++, p++) {
+                if (*s == '\0')
+                        s = LLT_GC_VECTOR__SIZE;
+                if (*p == 'L') {@+
+                        @<Unit test part: test a live |vector|@>
+                } else {@+
+                        @<Unit test part: test an unused |vector|@>
+                }
+                s++;
+        }
+        return ok;
+}
+
+@ @<Unit test part: test a live |vector|@>=
+liveok = object_compare(fix->safe_buf + serial, fix->size_buf[live],
+        fix->cell_buf[live], bfalse);
+tap_more(ok, liveok, fpmsgf("(L-%d) object is unchanged", live));
+liveok = vector_offset(fix->cell_buf[live]) == fix->offset_buf[live] - delta;
+tap_more(ok, liveok, fpmsgf("(L-%d), object is defragmented", live));
+serial += fix->size_buf[live];
+live++;
+
+@ @<Unit test part: test an unused |vector|@>=
+f = *s - '0';
+delta += f ? vector_realsize(f) : 0;
+tagok = freeok = btrue;
+for (i = 0; i < (int) fix->unsafe_bufsize; i++) {
+        j = fix->unsafe_buf[i];
+        if (special_p(j) || symbol_p(j) || smallint_p(j))
+                continue;
+        tagok = (tag(j) == TAG_NONE) && tagok;
+        freeok = freelist[i] && freeok;
+}
+tap_more(ok, tagok, fpmsgf("(U-%d) object's tag is cleared", unused));
+tap_more(ok, freeok, fpmsgf("(U-%d) object is in the free list", unused));
+unused++;
+
+@ @<Unit test: garbage collector |gc_vector|@>=
+void
+llt_GC_Vector_destroy (llt_Fixture *fix)
+{
+        free(fix->cell_buf);
+        free(fix->offset_buf);
+        free(fix->safe_buf);
+        free(fix->size_buf);
+        free(fix->unsafe_buf);
+        vm_init_imp();
+}
+
+@ @<Unit test: garbage collector |gc_vector|@>=
+void
+llt_GC_Vector_act (llt_Fixture *fix)
+{
+        fix->ret_val = gc_vectors();
+}
+
+@ @<Unit test: garbage collector |gc_vector|@>=
+llt_Fixture *
+llt_GC_Vector_fix (llt_Fixture *fix,
+                   const char *name)
+{
+        fix->name = name;
+        fix->prepare = llt_GC_Vector_prepare;
+        fix->destroy = llt_GC_Vector_destroy;
+        fix->act = llt_GC_Vector_act;
+        fix->test = llt_GC_Vector_test;
+        return fix;
+}
+
+@ The tests themselves are then defined with a list of combinations
+of \.{L} \AM\ \.{U} that are built into the fixtures.
+
+@<Unit test: garbage collector |gc_vector|@>=
+llt_Fixture *
+llt_GC_Vector__All (void)
+{
+        static char *test_patterns[] = {
+                "L",
+                "LL",
+                "LLL",
+                "LLLU",
+                "LLLUUU",
+                "LLUL",
+                "LLUUUL",
+                "LULL",
+                "LUULL",
+                "LULUL",
+                "LUULUL",
+                "LUULUUL",
+                "LLLULLLULLL",
+                "LLLUUULLLUUULLL",
+                "UL",
+                "ULLL",
+                "ULLLU",
+                "UUULLL",
+                "UUULLLUUU",
+                "UUULLLUUULLL",
+                "UUULLLUUULLLUUU",
+                NULL
+        };
+        char **p;
+        llt_Fixture *f;
+        int c, i;
+        for (c = 0, p = test_patterns; *p; c++, p++)
+                ;
+        f = llt_alloc(c);
+        for (i = 0; i < c; i++) {
+                llt_GC_Vector_fix(f + i, __func__);
+                f[i].suffix = f[i].pattern = test_patterns[i];
+        }
+        return f;
+}
 
 @*1 Objects.
 

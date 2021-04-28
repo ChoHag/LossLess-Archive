@@ -9,6 +9,9 @@ TESTS:=         \
 	t/cell-heap.t \
 	t/eval.t \
 	t/exception.t \
+	t/gc-mark.t \
+	t/gc-sweep.t \
+	t/gc-vector.t \
 	t/if.t \
 	t/lambda.t \
 	t/pair.t \
@@ -19,6 +22,9 @@ TEST_SOURCES:= \
 	t/cell-heap.c \
 	t/eval.c \
 	t/exception.c \
+	t/gc-mark.c \
+	t/gc-sweep.c \
+	t/gc-vector.c \
 	t/if.c \
 	t/lambda.c \
 	t/pair.c \
