@@ -4323,6 +4323,36 @@ object_copyref_imp (cell o,
         return p;
 }
 
+@ @d SIZEOF_LLT_COPY (sizeof (size_t) + sizeof (cell))
+@<Type def...@>=
+typedef struct {
+        size_t size;
+        cell origin;
+        char buf[];
+} llt_copy;
+
+@ @<Function dec...@>=
+llt_copy *
+llt_copy_object (cell o,
+                 boolean with_offset_p);
+
+@ @c
+/* TODO merge these */
+llt_copy *
+llt_copy_object (cell o,
+                 boolean with_offset_p)
+{
+        size_t s = object_sizeof(o);
+        llt_copy *r;
+        r = malloc(s + SIZEOF_LLT_COPY);
+        ERR_OOM_P(r);
+        r->size = s;
+        r->origin = o;
+        object_copy(o, r->buf, with_offset_p);
+        return r;
+}
+
+@ @c
 #define probe_push(n, o) do {             \
         vms_push(cons((o), NIL));         \
         vms_set(cons(sym(n), vms_ref())); \
@@ -4403,6 +4433,7 @@ end of testing with an argument of 0 to emit exactly one test plan.
 #ifdef LL_TEST
 void tap_plan (int);
 boolean tap_ok (boolean, char *);
+int test_count_free_list (void);
 char * test_msgf (char *, const char *, char *, ...);
 void test_vm_state (char *, int);
 #endif
@@ -4541,6 +4572,19 @@ test_vm_state (char *prefix,
         @/@, /* TODO? Others: root unchanged; */
 }
 
+@ @c
+int
+test_count_free_list (void)
+{
+        int r = 0;
+        cell c = Cells_Free;
+        while (!null_p(c)) {
+                r++;
+                c = cdr(c);
+        }
+        return r;
+}
+
 @* Sanity Test. This seemingly pointless test achieves two goals:
 the test harness can run it first and can abort the entire test
 suite if it fails, and it provides a simple demonstration of how
@@ -4604,7 +4648,8 @@ implement its own |llt_Fixture| with this common header.
         llt_thunk prepare;  \
         llt_thunk act;      \
         llt_unit test;      \
-        llt_thunk destroy@; /* no semicolon */
+        llt_thunk destroy;  \
+        boolean can_gc_p@; /* no semicolon */
 
 @ The vast majority (all, so far) of unit tests follow the same
 simple structure. There are plans for more interactive tests but
@@ -4651,26 +4696,62 @@ boolean
 llt_main (llt_Fixture *suite)
 {
         int i;
+        int f0, f1;
         boolean all, ok;
-        char buf[TEST_BUFSIZE] = {0};
-        ok = btrue;
+        char buf[TEST_BUFSIZE] = {0}, *name;
+        all = btrue;
         for (i = 0; i < suite->max; i++) {
-                if (suite[i].prepare)
-                        suite[i].prepare((suite + i));
-                suite[i].act((suite + i));
                 if (suite[i].suffix)
                         snprintf(buf, TEST_BUFSIZE, "%s (%s)",
                                 suite[i].name, suite[i].suffix);
                 else
                         snprintf(buf, TEST_BUFSIZE, "%s", suite[i].name);
-                suite[i].name = (char *) buf;
-                ok = suite[i].test((suite + i));
-                tap_ok(ok, buf);
-                all = all && ok;
-                if (suite[i].destroy)
-                        suite[i].destroy((suite + i));
+                @<Unit test a single fixture@>@;
+                if (suite[i].can_gc_p) {
+                        @<Repeat the fixture with garbage collection@>
+                }
+                tap_more(all, ok, buf);
         }
         return all;
+}
+
+@ @<Unit test a single fixture@>=
+name = (char *) suite[i].name;
+suite[i].name = (char *) buf;
+if (suite[i].prepare)
+        suite[i].prepare(suite + i);
+if (suite[i].can_gc_p)
+        f0 = test_count_free_list();
+suite[i].act(suite + i);
+if (suite[i].can_gc_p)
+        f1 = test_count_free_list();
+ok = suite[i].test(suite + i);
+if (suite[i].destroy)
+        suite[i].destroy(suite + i);
+suite[i].name = name;
+
+@ This is substantially the same as the previous section except
+that after the fixture is prepared |cons| is called repeatedly to
+waste cells before the fixture's action is taken.
+
+@<Repeat the fixture with garbage collection@>=
+int d, j, k;
+d = f0 - f1;
+for (j = d; j >= 0; j--) {
+        sprintf(buf, "%s: trigger gc at %d free cells",
+                name, j);
+        name = (char *) suite[i].name;
+        suite[i].name = buf;
+        if (suite[i].prepare)
+                suite[i].prepare(suite + i);
+        d = test_count_free_list();
+        for (k = 0; k < d - j; k++)
+                cons(NIL, NIL);
+        suite[i].act(suite + i);
+        ok = ok && suite[i].test(suite + i);
+        if (suite[i].destroy)
+                suite[i].destroy(suite + i);
+        suite[i].name = name;
 }
 
 @ @<Unit test body@>=
@@ -6388,6 +6469,511 @@ llt_GC_Vector__All (void)
 }
 
 @*1 Objects.
+
+@d LLT_TEST_VARIABLE sym("test-variable")
+@d LLT_VALUE_MARCO sym("marco?")
+@d LLT_VALUE_POLO sym("polo!")
+@d LLT_VALUE_FISH sym("fish...")
+@c
+
+@*2 Environments.
+
+Broadly speaking there are three activities that can be performed
+on an |environment| which need to be tested: searching, setting and
+lifting stack items.
+
+@(t/environments.c@>=
+@<Unit test header@>@;
+
+struct llt_Fixture {
+        LLT_FIXTURE_HEADER;
+        cell      expect;     /* desired result */
+        cell      formals;    /* formals for |env_lift_stack| */
+        boolean   had_ex_p;   /* was an error raised? */
+        int       layers;     /* depth of prepared |environment| */
+        cell      layer[3];   /* prepared |environment| contents */
+        boolean   new_p;      /* seting or replacing variable */
+        int       null_pos;   /* where to put a |NIL| in |formals| */
+        boolean   proper_p;   /* create a proper list? */
+        cell      ret_val;    /* returned value */
+        llt_copy *save_Env;   /* dump of |Env| */
+        jmp_buf   save_goto;  /* copy |Goto_Error| to restore */
+        int       save_RTSp;  /* |RTSp| prior to action */
+        cell    (*search_fn) (cell, cell);
+                              /* |env_search|/|env_here| */
+        int       stack;      /* how many stack items */
+        cell      sym_var[3]; /* prepared symbol objects */
+        cell      sym_val[3];
+        boolean   want_ex_p;  /* will an error be raised? */
+};
+
+@<Unit test body@>@;
+
+@<Unit test: environment objects@>@;
+
+llt_fixture Test_Fixtures[] = {@|
+        llt_Environments__Lift_Stack,
+        llt_Environments__Search_Multi_Masked,
+        llt_Environments__Search_Multi_Simple,
+        llt_Environments__Search_Single_Layer,
+        llt_Environments__Set,
+        NULL@/
+};
+
+@ @<Unit test: environment objects@>=
+void
+llt_Environments_prepare (llt_Fixture *fix)
+{
+        char buf[TEST_BUFSIZE] = {0};
+        cell e[3];
+        int i;
+        @<Unit test part: prepare |environment| layers@>@;
+        if (fix->stack) {
+                @<Unit test part: prepare liftable stack@>
+        }
+        bcopy(fix->save_goto, Goto_Error, sizeof (jmp_buf));
+        Error_Handler = btrue;
+}
+
+@ All of these tests prepare an |environment| of 1-3 layers.
+
+@<Unit test part: prepare |environment| layers@>=
+vms_push(Env);
+Env = e[0] = env_empty();
+if (fix->layers > 1)
+        Env = e[1] = env_extend(e[0]);
+if (fix->layers > 2)
+        Env = e[2] = env_extend(e[1]);
+for (i = 0; i < fix->layers; i++)
+        if (!null_p(fix->layer[i]))
+                env_set(e[i], LLT_VALUE_MARCO, fix->layer[i], btrue);
+fix->save_Env = llt_copy_object(Env, btrue);
+fix->save_RTSp = RTSp;
+for (i = 0; i < 3; i++) {
+        snprintf(buf, TEST_BUFSIZE, "test-variable-%d", i + 1);
+        fix->sym_var[i] = sym(buf);
+        snprintf(buf, TEST_BUFSIZE, "test-value-%d", i + 1);
+        fix->sym_val[i] = sym(buf);
+}
+
+@ To test |env_lift_stack| the stack is seeded with up to 3 items.
+
+@<Unit test part: prepare liftable stack@>=
+rts_push(fix->sym_val[fix->stack - 1]);
+if (!fix->proper_p)
+        fix->formals = fix->sym_var[fix->stack - 1];
+else if (fix->null_pos == fix->stack)
+        fix->formals = cons(NIL, NIL);
+else
+        fix->formals = cons(fix->sym_var[fix->stack - 1], NIL);
+vms_push(fix->formals);
+for (i = fix->stack - 1; i > 0; i--) {
+        rts_push(fix->sym_val[i - 1]);
+        if (fix->null_pos && fix->null_pos == i)
+                fix->formals = cons(NIL, fix->formals);
+        else
+                fix->formals = cons(fix->sym_var[i - 1],
+                        fix->formals);
+        vms_set(fix->formals);
+}
+
+@ @<Unit test: environment objects@>=
+void
+llt_Environments_destroy (llt_Fixture *fix __unused)
+{
+        Env = fix->save_Env->origin;
+        Acc = VMS = NIL;
+        free(fix->save_Env);
+        bcopy(fix->save_goto, Goto_Error, sizeof (jmp_buf));
+        Error_Handler = bfalse;
+}
+
+@ There is no default action or test procedures for these units.
+
+@<Unit test: environment objects@>=
+llt_Fixture *
+llt_Environments_fix (llt_Fixture *fix,
+                  const char *name)
+{
+        fix->name = name;
+        fix->prepare = llt_Environments_prepare;
+        fix->destroy = llt_Environments_destroy;
+        fix->act = NULL;
+        fix->test = NULL;
+        return fix;
+}
+
+@ Searching the environment results in a variable being found and
+its value returned, or it's not found and |UNDEFINED| is returned.
+If a variable is present in more than one layer the correct variant
+must be returned.
+
+This test describes a total of 14 test cases, 7 each for |env_search|
+and |env_here|:
+
+* 2 tests of a single-layer |environment|, with the variable
+present \AM\ not.
+
+The following cases all describe tests of multi-layered |environment|s:
+
+* 3 tests: the variable is in the top layer, a parent layer
+and not present at all.
+
+* The variable is in the top layer and in the parent layer with a
+different value.
+
+* The variable is in the parent layer and {\it its} parent.
+
+TODO: tests with a populated environment.
+
+@<Unit test: environment objects@>=
+void
+llt_Environments__Search_act (llt_Fixture *fix)
+{
+        fix->ret_val = fix->search_fn(Env, LLT_VALUE_MARCO);
+}
+
+@ @<Unit test: environment objects@>=
+boolean
+llt_Environments__Search_test (llt_Fixture *fix)
+{
+        char buf[TEST_BUFSIZE] = {0};
+        if (true_p(fix->expect))
+                return tap_ok(fix->ret_val == LLT_VALUE_POLO,
+                        fpmsgf("variable is found & correct"));
+        else
+                return tap_ok(undefined_p(fix->ret_val),
+                        fpmsgf("variable is not found"));
+}
+
+@ Search a single layer, with and without the variable present.
+
+@<Unit test: environment objects@>=
+llt_Fixture *
+llt_Environments__Search_Single_Layer (void)
+{
+        int i;
+        llt_Fixture *f = llt_alloc(4);
+        for (i = 0; i < 4; i++) {
+                llt_Environments_fix(f + i, __func__);
+                f[i].act = llt_Environments__Search_act;
+                f[i].test = llt_Environments__Search_test;
+                f[i].layers = 1;
+        }
+        for (i = 0; i < 4; i += 2) {
+                f[i].search_fn = env_search;
+                f[i + 1].search_fn = env_here;
+        }
+        f[0].suffix = "env_search: not present";
+        f[1].suffix = "env_here: not present";
+        f[0].layer[0] = f[1].layer[0] = NIL;
+        f[0].expect = f[1].expect = FALSE;
+        f[2].suffix = "env_search: present";
+        f[3].suffix = "env_here: present";
+        f[2].layer[0] = f[3].layer[0] = LLT_VALUE_POLO;
+        f[2].expect = f[3].expect = TRUE;
+        return f;
+}
+
+@ Search a multi-layered |environment| with the variable present
+at the top, in the parent and not present at all.
+
+@<Unit test: environment objects@>=
+llt_Fixture *
+llt_Environments__Search_Multi_Simple (void)
+{
+        int i;
+        llt_Fixture *f = llt_alloc(6);
+        for (i = 0; i < 6; i++) {
+                llt_Environments_fix(f + i, __func__);
+                f[i].act = llt_Environments__Search_act;
+                f[i].test = llt_Environments__Search_test;
+                f[i].layers = 3;
+                f[i].layer[0] = f[i].layer[1] = f[i].layer[2] = NIL;
+        }
+        for (i = 0; i < 6; i += 2) {
+                f[i].search_fn = env_search;
+                f[i + 1].search_fn = env_here;
+        }
+        f[0].suffix = "env_search: present in top";
+        f[1].suffix = "env_here: present in top";
+        f[0].expect = f[1].expect = TRUE;
+        f[0].layer[2] = f[1].layer[2] = LLT_VALUE_POLO;
+        f[2].suffix = "env_search: present in parent";
+        f[3].suffix = "env_here: present in parent";
+        f[2].expect = TRUE;
+        f[3].expect = FALSE;
+        f[2].layer[1] = f[3].layer[1] = LLT_VALUE_POLO;
+        f[4].suffix = "env_search: not present";
+        f[5].suffix = "env_here: not present";
+        f[4].expect = f[5].expect = FALSE;
+        return f;
+}
+
+@ Search a multi-layered |environment| with the variable present
+in the top layer {\it and} parent, and the parent and its parent.
+
+@<Unit test: environment objects@>=
+llt_Fixture *
+llt_Environments__Search_Multi_Masked (void)
+{
+        int i;
+        llt_Fixture *f = llt_alloc(4);
+        for (i = 0; i < 4; i++) {
+                llt_Environments_fix(f + i, __func__);
+                f[i].act = llt_Environments__Search_act;
+                f[i].test = llt_Environments__Search_test;
+                f[i].layers = 3;
+                f[i].layer[0] = f[i].layer[1] = f[i].layer[2] = NIL;
+        }
+        for (i = 0; i < 4; i += 2) {
+                f[i].search_fn = env_search;
+                f[i + 1].search_fn = env_here;
+        }
+        f[0].suffix = "env_search: present in top, conflict in parent";
+        f[1].suffix = "env_here: present in top, conflict in parent";
+        f[0].expect = f[1].expect = TRUE;
+        f[0].layer[2] = f[1].layer[2] = LLT_VALUE_POLO;
+        f[0].layer[1] = f[1].layer[1] = LLT_VALUE_FISH;
+        f[2].suffix = "env_search: present in parent, conflict in ancestor";
+        f[3].suffix = "env_here: present in parent, conflict in ancestor";
+        f[2].expect = TRUE;
+        f[3].expect = FALSE;
+        f[2].layer[1] = f[3].layer[1] = LLT_VALUE_POLO;
+        f[2].layer[0] = f[3].layer[0] = LLT_VALUE_FISH;
+        return f;
+}
+
+@ Setting a variable in an |environment| is really two mostly
+different processes depending on whether the variable is being
+created anew in the |environment| or replacing one, which must be
+first found and removed. Their tests are named \.{define} and
+\.{set}, respectively, to match the \LL/ operators which call them.
+
+TODO: non-empty environment.
+
+TODO: variable in different parts of the layer (head, mid, tail).
+
+TODO: verify that the old binding is removed.
+
+@<Unit test: environment objects@>=
+void
+llt_Environments__Set_act (llt_Fixture *fix)
+{
+        if (!setjmp(Goto_Error))
+                env_set(Env, LLT_VALUE_MARCO, LLT_VALUE_POLO, fix->new_p);
+        else
+                fix->had_ex_p = btrue;
+}
+
+@ Regardless of the route taken there are only two possible outcomes:
+the variable gets set or an error is raised.
+
+@<Unit test: environment objects@>=
+boolean
+llt_Environments__Set_test (llt_Fixture *fix)
+{
+        char buf[TEST_BUFSIZE] = {0};
+        boolean ok;
+        cell found;
+        if (fix->want_ex_p) {
+                ok = tap_ok(fix->had_ex_p,
+                        fpmsgf("an error was raised"));
+                if (fix->new_p) {
+                        tap_again(ok, ex_id(Acc) == sym(ERR_BOUND)
+                                        && ex_detail(Acc) == LLT_VALUE_MARCO,
+                                fpmsgf("the error is bound marco"));
+                } else {
+                        tap_again(ok, ex_id(Acc) == sym(ERR_UNBOUND)
+                                        && ex_detail(Acc) == LLT_VALUE_MARCO,
+                                fpmsgf("the error is unbound marco"));
+                }
+        } else
+                ok = tap_ok(!fix->had_ex_p,
+                        fpmsgf("an error was not raised"));
+        found = env_search(Env, LLT_VALUE_MARCO);
+        tap_more(ok, found == fix->expect,
+                fpmsgf("the variable has the correct value"));
+        return ok;
+}
+
+@ For each of define \AM\ set, there are three tests: the variable
+is already present, the variable is present in an ancestor, and the
+variable is not present.
+
+@<Unit test: environment objects@>=
+llt_Fixture *
+llt_Environments__Set (void)
+{
+        int i;
+        llt_Fixture *f = llt_alloc(6);
+        for (i = 0; i < 6; i++) {
+                llt_Environments_fix(f + i, __func__);
+                f[i].act = llt_Environments__Set_act;
+                f[i].test = llt_Environments__Set_test;
+                f[i].layers = 2;
+                f[i].new_p = !(i % 2);
+                f[i].can_gc_p = btrue;
+        }
+        f[0].suffix = "define: already present";
+        f[1].suffix = "set: already present";
+        f[0].layer[1] = f[1].layer[1] = LLT_VALUE_FISH;
+        f[0].layer[0] = f[1].layer[0] = NIL;
+        f[0].want_ex_p = btrue;
+        f[0].expect = LLT_VALUE_FISH;
+        f[1].expect = LLT_VALUE_POLO;
+        f[2].suffix = "define: in an ancestor";
+        f[3].suffix = "set: in an ancestor";
+        f[2].layer[1] = f[3].layer[1] = NIL;
+        f[2].layer[0] = f[3].layer[0] = LLT_VALUE_FISH;
+        f[2].expect = LLT_VALUE_POLO;
+        f[3].want_ex_p = btrue;
+        f[3].expect = LLT_VALUE_FISH;
+        f[4].suffix = "define: not in the environment";
+        f[5].suffix = "set: not in the environment";
+        f[4].layer[1] = f[5].layer[1] = NIL;
+        f[4].layer[0] = f[5].layer[0] = NIL;
+        f[4].expect = LLT_VALUE_POLO;
+        f[5].want_ex_p = btrue;
+        f[5].expect = UNDEFINED;
+        return f;
+}
+
+@ Lifting stack items into an environment has many moving parts so
+we return to more formally deriving its test cases.
+
+\point 1. {\it What is the contract fulfilled by the code under test?}
+
+Expects an environment E$_0$ and formals, which is a symbol, |NIL|
+or a possibly-dotted list of symbols or |NIL|. Returns an extension
+of that environment E$_1$.
+
+Pops a stack item for every element of the list of formals (acting
+as though a dotted list were proper and a plain symbol were a list
+of 1 symbol). If the formal item is not |NIL| then the popped item
+is included in E$_1$, named by the formal. E$_0$ remains unchanged.
+
+Allocates storage and may call garbage collection.
+
+\point 2. {\it What preconditions are required, and how are they
+enforced?}
+
+|env_lift_stack| does not validate its inputs or protect its arguments
+so the stack must be populated correctly and the arguments saved
+from garbage collection.
+
+\point 3. {\it What postconditions are guaranteed?}
+
+An |environment| will always be returned. The stack will have been
+cleared of the arguments.
+
+\point 4. {\it What example inputs trigger different behaviors?}
+
+Only the formals has any impact on operation. In particular whether
+it is |NIL|, a symbol or a list and, if a list, whether it contains
+|NIL|s or is improper.
+
+\point 5. {\it What set of tests will trigger each behavior and
+validate each guarantee?}
+
+A list of formals of lengths 0, 1, 2 \AM\ 3 with variants with and
+without |NIL|. Lengths 1 and 2 additionally test a lone symbol and
+an improper list.
+
+@<Unit test: environment objects@>=
+void
+llt_Environments__Lift_Stack_act (llt_Fixture *fix)
+{
+        fix->ret_val = env_lift_stack(Env, fix->formals);
+}
+
+@ @<Unit test: environment objects@>=
+boolean
+llt_Environments__Lift_Stack_test (llt_Fixture *fix)
+{
+        char buf[TEST_BUFSIZE] = {0};
+        cell found;
+        boolean ep, ok;
+        ok = tap_ok(ep = environment_p(fix->ret_val),
+                fpmsgf("the return value is an environment"));
+        tap_again(ok, env_parent(fix->ret_val) == Env,
+                fpmsgf("the correct environment is extended"));
+        tap_more(ok, object_compare(fix->save_Env->buf, fix->save_Env->size, Env, btrue),
+                fpmsgf("the parent environment is unchanged"));
+        tap_more(ok, RTSp == fix->save_RTSp,
+                fpmsgf("the stack is reset"));
+        found = NIL;
+        switch (fix->stack) { /* these are all expected to fall through */
+        case 3: /* No fixtures have |null_pos == 3| */
+                if (ep) found = env_here(fix->ret_val, fix->sym_var[2]);
+                tap_more(ok, found == fix->sym_val[2],
+                        fpmsgf("3rd argument is lifted"));
+        case 2:
+                if (ep) found = env_here(fix->ret_val, fix->sym_var[1]);
+                if (fix->null_pos == 2)
+                        tap_more(ok, undefined_p(found),
+                                fpmsgf("2nd argument is ignored"));
+                else
+                        tap_more(ok, found == fix->sym_val[1],
+                                fpmsgf("2nd argument is lifted"));
+        case 1:
+                if (ep) found = env_here(fix->ret_val, fix->sym_var[0]);
+                if (fix->null_pos == 1)
+                        tap_more(ok, undefined_p(found),
+                                fpmsgf("1st argument is ignored"));
+                else
+                        tap_more(ok, found == fix->sym_val[0],
+                                fpmsgf("1st argument is lifted"));
+        }
+        return ok;
+}
+
+@ @<Unit test: environment objects@>=
+llt_Fixture *
+llt_Environments__Lift_Stack (void)
+{
+        int i;
+        llt_Fixture *f = llt_alloc(11);
+        for (i = 0; i < 11; i++) {
+                llt_Environments_fix(f + i, __func__);
+                f[i].act = llt_Environments__Lift_Stack_act;
+                f[i].test = llt_Environments__Lift_Stack_test;
+                f[i].layers = 1;
+                f[i].layer[0] = NIL;
+                f[i].proper_p = btrue;
+                f[i].formals = NIL;
+                f[i].can_gc_p = btrue;
+        }
+        f[i=0].suffix = "NIL";
+        f[++i].suffix = "symbol";
+        f[  i].stack = 1;
+        f[  i].proper_p = bfalse;
+        f[++i].suffix = "pair of two symbols";
+        f[  i].stack = 2;
+        f[  i].proper_p = bfalse;
+        f[++i].suffix = "improper list of symbols";
+        f[  i].stack = 3;
+        f[  i].proper_p = bfalse;
+        f[++i].suffix = "list of NIL";
+        f[  i].stack = 1;
+        f[  i].null_pos = 1;
+        f[++i].suffix = "list of 1 symbol";
+        f[  i].stack = 1;
+        f[++i].suffix = "list of 2 symbols";
+        f[  i].stack = 2;
+        f[++i].suffix = "list of 2 with NIL first";
+        f[  i].stack = 2;
+        f[  i].null_pos = 1;
+        f[++i].suffix = "list of 2 with NIL last";
+        f[  i].stack = 2;
+        f[  i].null_pos = 2;
+        f[++i].suffix = "list of 3 symbols";
+        f[  i].stack = 3;
+        f[++i].suffix = "list of 3 with a NIL";
+        f[  i].stack = 3;
+        f[  i].null_pos = 2;
+        return f;
+}
 
 @* Pair Integration. With the basic building blocks' interactions
 tested we arrive at the critical integration between the compiler

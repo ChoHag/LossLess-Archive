@@ -7,6 +7,7 @@ SOURCES:=       lossless.c repl.c
 OBJECTS:=       lossless.o repl.o
 TESTS:=         \
 	t/cell-heap.t \
+	t/environments.t \
 	t/eval.t \
 	t/exception.t \
 	t/gc-mark.t \
@@ -20,6 +21,7 @@ TESTS:=         \
 	t/vov.t
 TEST_SOURCES:= \
 	t/cell-heap.c \
+	t/environments.c \
 	t/eval.c \
 	t/exception.c \
 	t/gc-mark.c \
