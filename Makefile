@@ -1,12 +1,15 @@
 CTANGLE?= ctangle
 CWEAVE?=  cweave
 PDFTEX?=  pdftex
+TEST?=    prove
 CFLAGS+=  -Wall -Wpedantic -Wextra
+TFLAGS+=  -v
 
 SOURCES:=       lossless.c repl.c
 OBJECTS:=       lossless.o repl.o
-TESTS:=         \
+TEST_SCRIPTS:=         \
 	t/cell-heap.t \
+	t/compiler.t \
 	t/environments.t \
 	t/eval.t \
 	t/exception.t \
@@ -14,6 +17,7 @@ TESTS:=         \
 	t/gc-sweep.t \
 	t/gc-vector.t \
 	t/if.t \
+	t/interpreter.t \
 	t/lambda.t \
 	t/pair.t \
 	t/sanity.t \
@@ -21,6 +25,7 @@ TESTS:=         \
 	t/vov.t
 TEST_SOURCES:= \
 	t/cell-heap.c \
+	t/compiler.c \
 	t/environments.c \
 	t/eval.c \
 	t/exception.c \
@@ -28,13 +33,14 @@ TEST_SOURCES:= \
 	t/gc-sweep.c \
 	t/gc-vector.c \
 	t/if.c \
+	t/interpreter.c \
 	t/lambda.c \
 	t/pair.c \
 	t/sanity.c \
 	t/vector-heap.c \
 	t/vov.c
 
-ALLOC_TESTS:= t/cell-heap.t t/vector-heap.t
+ALLOC_TEST_SCRIPTS:= t/cell-heap.t t/vector-heap.t
 
 TEST_OBJECTS:= llalloc.o lltest.o
 
@@ -56,17 +62,16 @@ lossless.tex: lossless.w
 
 lossless: $(OBJECTS)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) -o lossless $(OBJECTS)
-	strip lossless
 
 $(OBJECTS): $(SOURCES)
 
 $(SOURCES) $(TEST_SOURCES) $(OTHER_SOURCES): t lossless.w
 	$(CTANGLE) lossless.w
 
-test: $(TESTS)
-	prove -vr -e '' t
+test: $(TEST_SCRIPTS)
+	$(TEST) $(TFLAGS) -e '' t
 
-$(TESTS): $(TEST_OBJECTS)
+$(TEST_SCRIPTS): $(TEST_OBJECTS)
 
 $(TEST_OBJECTS): $(TEST_SOURCES) $(OTHER_SOURCES)
 
@@ -76,7 +81,7 @@ t:
 .SUFFIXES: .t
 
 .c.t:
-	if echo " $(ALLOC_TESTS) " | grep -qF " $@ "; then                     \
+	if echo " $(ALLOC_TEST_SCRIPTS) " | grep -qF " $@ "; then              \
 		$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) -I. llalloc.o -o $@ $<; \
 	else                                                                   \
 		$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) -I. lltest.o -o $@ $<;  \

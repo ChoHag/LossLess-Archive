@@ -32,7 +32,7 @@
 
 @** Introduction. \LL/ is a programming language and environment
 similar to scheme. This document describes the implementation of a
-\LL/ runtime written in \CEE/ and \LL/ itself will be described
+\LL/ run-time written in \CEE/ and \LL/ itself will be described
 elsewhere. In unambiguous cases \LL/ may be used to refer specifically
 to the implementation.
 
@@ -131,7 +131,7 @@ The other thing that you don't need to know is that sometimes \CEE/
 compilers can make the previous paragraph a tissue of lies.
 
 @d ERR_UNIMPLEMENTED "unimplemented"
-@d error(x,d) handle_error((x), NIL, (d))
+@d error(x,d) error_imp((x), NIL, (d))
 @d ex_id car
 @d ex_detail cdr
 @<Global var...@>=
@@ -139,13 +139,13 @@ volatile boolean Error_Handler = bfalse;
 jmp_buf Goto_Begin;
 jmp_buf Goto_Error;
 
-@ @<External...@>=
+@ @<Extern...@>=
 extern volatile boolean Error_Handler;
 extern jmp_buf Goto_Begin;
 extern jmp_buf Goto_Error;
 
 @ @<Function dec...@>=
-void handle_error (char *, cell, cell) __dead;
+void error_imp (char *, cell, cell) __dead;
 void warn (char *, cell);
 
 @ Raised errors may either be a \CEE/-`string'\footnote{$^1$}{\CEE/
@@ -159,11 +159,12 @@ are promoted to an |exception| object and the handler entered.
 
 @c
 void
-handle_error (char *message,
-              cell  id,
-              cell  detail)
+error_imp (char *message,
+           cell  id,
+           cell  detail)
 {
         int len;
+        char wbuf[BUFFER_SEGMENT] = {0};
 
         if (!null_p(id)) {
                 message = symbol_store(id);
@@ -179,24 +180,22 @@ handle_error (char *message,
                 vms_clear();
                 longjmp(Goto_Error, 1);
         }
+        write_form(detail, wbuf, BUFFER_SEGMENT, 0);
         printf("UNHANDLED ERROR: ");
         for (; len--; message++)
                 putchar(*message);
-        putchar(':');
-        putchar(' ');
-        write_form(detail, 0);
-        printf("\n");
+        printf(": %s\n", wbuf);
         longjmp(Goto_Begin, 1);
 }
 
 @ Run-time errors are raised by the |OP_ERROR| opcode which passes
-control to |handle_error| (and never returns). The code which
+control to |error_imp| (and never returns). The code which
 compiles |error| to emit this opcode comes later after the compiler
 has been defined.
 
 @<Opcode implementations@>=
 case OP_ERROR:@/
-        handle_error(NULL, Acc, rts_pop(1));
+        error_imp(NULL, Acc, rts_pop(1));
         break; /* superfluous */
 
 @ We additionally define |warn| here because where else is it going
@@ -207,9 +206,9 @@ void
 warn (char *message,
       cell  detail)
 {
-        printf("WARNING: %s: ", message);
-        write_form(detail, 0);
-        printf("\n");
+        char wbuf[BUFFER_SEGMENT] = {0};
+        write_form(detail, wbuf, BUFFER_SEGMENT, 0);
+        printf("WARNING: %s: %s\n", message, wbuf);
 }
 
 @** Memory Management. The most commonly used data type in lisp-like
@@ -390,6 +389,7 @@ types.
 @d applicative_p(p)   (!special_p(p) && ((tag(p) & TAG_FORMAT) == FORMAT_APPLICATIVE))
 @d compiler_p(p)      (!special_p(p) && ((tag(p) & TAG_FORMAT) == FORMAT_COMPILER))
 @d environment_p(p)   (!special_p(p) && ((tag(p) & TAG_FORMAT) == FORMAT_ENVIRONMENT))
+@d exception_p(p)     (!special_p(p) && ((tag(p) & TAG_FORMAT) == FORMAT_EXCEPTION))
 @d integer_p(p)       (!special_p(p) && ((tag(p) & TAG_FORMAT) == FORMAT_INTEGER))
 @d operative_p(p)     (!special_p(p) && ((tag(p) & TAG_FORMAT) == FORMAT_OPERATIVE))
 @d symbol_p(p)        (!special_p(p) && ((tag(p) & TAG_FORMAT) == FORMAT_SYMBOL))
@@ -557,7 +557,7 @@ vector_new_imp (int  size,
         vector_cell(r) = r;
         vector_index(r) = 0;
         if (fill_p)
-                for (i = VECTOR_HEAD; i <= size + (VECTOR_HEAD - 1); i++)@/
+                for (i = 0; i <= size; i++)@/
                         vector_ref(r, i) = fill;
         return r;
 }
@@ -797,7 +797,7 @@ which will be defined are three stacks. We could define the run-time
 stack later because it's not used until the virtual machine is
 implemented but the implementations mirror each other and the
 internal VM stack is required before real objects can be defined.
-Also the runtime stack uses the VM stack in its implementation.
+Also the run-time stack uses the VM stack in its implementation.
 
 The compiler stack is included here because it's identical to the
 VM stack.
@@ -1354,6 +1354,17 @@ value.
 @d env_parent car
 @d env_empty_p(e) (environment_p(e) && null_p(car(e)) && null_p(cdr(e)))
 @d env_root_p(e) (environment_p(e) && null_p(car(e)))
+@<Global var...@>=
+cell Sym_ERR_BOUND = NIL;
+cell Sym_ERR_UNBOUND = NIL;
+
+@ @<Extern...@>=
+extern cell Sym_ERR_BOUND, Sym_ERR_UNBOUND;
+
+@ @<Global init...@>=
+Sym_ERR_BOUND = sym(ERR_BOUND);
+Sym_ERR_UNBOUND = sym(ERR_UNBOUND);
+
 @ Searching through an |environment| starts at its top layer and
 walks along each |pair|. If it encounters a |pair| who's
 |symbol| matches, the value is returned. If not then the search
@@ -1367,7 +1378,7 @@ this function.
 
 @<Func...@>=
 cell env_here (cell, cell);
-cell env_lift_stack (cell, int, cell);
+cell env_lift_stack (cell, cell);
 cell env_search (cell, cell);
 void env_set (cell, cell, cell, boolean);
 
@@ -1401,6 +1412,10 @@ searched to see if the |symbol| is already bound. An |error| is
 raised if the symbol is bound (when running on behalf of {\it
 define!\/}) or not bound (when running on behalf of {\it set!\/}).
 
+@d env_set_fail(e) do {
+        vms_clear();
+        error((e), name);
+} while (0)
 @c
 void
 env_set (cell e,
@@ -1410,6 +1425,7 @@ env_set (cell e,
 {
         cell ass, t;
         ass = cons(name, cons(value, NIL));
+        vms_push(ass);
         if (new_p) { @<Mutate if unbound@> }
         else { @<Mutate if bound@> }
 }
@@ -1419,30 +1435,35 @@ binding from the |environment| and inserting the new binding. During
 the walk over the layer |t| is one pair ahead of the pair being
 considered so that when |name| is found |t|'s |cdr| can be changed,
 snipping the old binding out, so the first pair is checked specially.
+
 @<Mutate if bound@>=
 if (null_p(env_layer(e)))
-        error(ERR_UNBOUND, name);
+        env_set_fail(ERR_UNBOUND);
 if (caar(env_layer(e)) == name) {
         env_layer(e) = cons(ass, cdr(env_layer(e)));
+        vms_clear();
         return;
 }
 for (t = env_layer(e); !null_p(cdr(t)); t = cdr(t)) {
         if (caadr(t) == name) {
                 cdr(t) = cddr(t);
                 env_layer(e) = cons(ass, env_layer(e));
+                vms_clear();
                 return;
         }
 }
-error(ERR_UNBOUND, name);
+env_set_fail(ERR_UNBOUND);
 
 @ The case is simpler if the |name| must {\bf not} be bound already
 as the new binding can be prepended to the layer after searching with
 no need for special cases.
+
 @<Mutate if unbound@>=
-for (t = env_layer(e); !null_p(t); t = cdr(t))
-        if (caar(t) == name)
-                error(ERR_BOUND, name);
+if (!undefined_p(env_here(e, name)))
+        env_set_fail(ERR_BOUND);
 env_layer(e) = cons(ass, env_layer(e));
+vms_clear();
+return;
 
 @ Values are passed to functions on the stack. |env_lift_stack|
 moves these values from the stack into an |environment|.
@@ -1450,30 +1471,31 @@ moves these values from the stack into an |environment|.
 @c
 cell
 env_lift_stack (cell e,
-                int nargs,
                 cell formals)
 {
-        cell p, name, value, ass;
-        vms_push(env_extend(e));
-        p = NIL; /* prepare a new layer */
-        vms_push(p);
-        while (nargs--) {
+        cell ass, name, p, r;
+        vms_push(p = NIL); /* prepare a new layer */
+        while (!null_p(formals)) {
                 if (pair_p(formals)) {
                         name = car(formals);
                         formals = cdr(formals);
-                } else {@+
-                        name = formals;@+
+                } else {
+                        name = formals;
+                        formals = NIL;
                 }
-                value = rts_pop(1);
-                if (!null_p(name)) {
-                        ass = cons(name, cons(value, NIL));
-                        vms_set((p = cons(ass, p)));
+                if (null_p(name))
+                        rts_clear(1);
+                else {
+                        ass = cons(rts_pop(1), NIL);
+                        ass = cons(name, ass);
+                        p = cons(ass, p);
+                        vms_set(p);
                 }
         }
-        vms_pop();
-        cdr(vms_ref()) = p; /* place the new layer in the extended
-                               environment */
-        return vms_pop();
+        r = env_extend(e);
+        env_layer(r) = p;
+        vms_clear();
+        return r;
 }
 
 @*1 Closures \AM\ Compilers. Finally we have data structures to
@@ -1919,7 +1941,6 @@ cell read_form (void);
 cell read_list (cell);
 cell read_number (void);
 cell read_sexp (void);
-cell read_symbol (void);
 cell read_symbol (void);
 void unread_byte (char);
 int useful_byte (void);
@@ -2383,116 +2404,192 @@ to an output routine but for the time being \LL/ has no support for
 |string|s or output routines so the expression is written directly
 to |stdout|.
 
+@d BUFFER_SEGMENT 1024
 @d WRITER_MAX_DEPTH 1024 /* gotta pick something */
+@d append(b,r,c,s) do {
+        ssize_t _l = strlen(c);
+        if ((r) <= 0)
+                return -1;
+        if (strlcpy((b), (c), (r)) >= (size_t) (r))
+                return -(r);
+        (s) += _l;
+        (b) += _l;
+        (r) -= _l;
+} while (0)
+@d append_write(b,r,w,d,s) do {
+        ssize_t _l = write_form((w), (b), (r), (d));
+        if (_l <= 0)
+                return -1;
+        (s) += _l;
+        (b) += _l;
+        (r) -= _l;
+} while (0)
 @<Func...@>=
-boolean write_applicative(cell, int);
-boolean write_compiler(cell, int);
-boolean write_environment(cell, int);
-boolean write_integer(cell, int);
-boolean write_list(cell, int);
-boolean write_operative(cell, int);
-boolean write_symbol(cell, int);
-boolean write_syntax(cell, int);
-boolean write_vector(cell, int);
-void write_form (cell, int);
+ssize_t write_applicative (cell, char *, ssize_t, int);
+ssize_t write_bytecode (cell, char *, ssize_t, int);
+ssize_t write_compiler (cell, char *, ssize_t, int);
+ssize_t write_environment (cell, char *, ssize_t, int);
+ssize_t write_integer (cell, char *, ssize_t, int);
+ssize_t write_list (cell, char *, ssize_t, int);
+ssize_t write_operative (cell, char *, ssize_t, int);
+ssize_t write_symbol (cell, char *, ssize_t, int);
+ssize_t write_syntax (cell, char *, ssize_t, int);
+ssize_t write_vector (cell, char *, ssize_t, int);
+ssize_t write_form (cell, char *, ssize_t, int);
 
 @*1 Opaque Objects. |applicative|s, |compiler|s and |operative|s
 don't have much to say.
 
 @c
-boolean
+ssize_t
 write_applicative(cell sexp,
+                  char *buf,
+                  ssize_t rem,
                   int depth __unused)
 {
+        ssize_t len = 0;
         if (!applicative_p(sexp))
-                return bfalse;
-        printf("#<applicative ...>");
-        return btrue;
+                return 0;
+        append(buf, rem, "#<applicative ...>", len);
+        return len;
 }
 
-boolean
+ssize_t
 write_compiler(cell sexp,
+               char *buf,
+               ssize_t rem,
                int depth __unused)
 {
+        ssize_t len = 0;
         if (!compiler_p(sexp))
-                return bfalse;
-        printf("#<compiler-%s>", compiler_cname(sexp));
-        return btrue;
+                return 0;
+        append(buf, rem, "#<compiler ", len);
+        append(buf, rem, compiler_cname(sexp), len);
+        if (rem == 0)
+                return -1;
+        buf[0] = '>';
+        buf[1] = '\0';
+        return len + 1;
 }
 
-boolean
+ssize_t
 write_operative(cell sexp,
+                char *buf,
+                ssize_t rem,
                 int depth __unused)
 {
+        ssize_t len = 0;
         if (!operative_p(sexp))
-                return bfalse;
-        printf("#<operative ...>");
-        return btrue;
+                return 0;
+        append(buf, rem, "#<operative ...>", len);
+        return len;
 }
 
 @*1 As-Is Objects. |integer|s and |symbol|s print themselves.
 
 @c
-boolean
+ssize_t
 write_integer(cell sexp,
+              char *buf,
+              ssize_t rem,
               int depth __unused)
 {
+        ssize_t len = 0;
         if (!integer_p(sexp))
-                return bfalse;
-        printf("%d", int_value(sexp));
-        return btrue;
+                return 0;
+        len = snprintf(buf, rem, "%d", int_value(sexp));
+        if (len >= rem)
+                return -1;
+        return len;
 }
 
-boolean
+ssize_t
 write_symbol(cell sexp,
+             char *buf,
+             ssize_t rem,
              int depth __unused)
 {
         int i;
         if (!symbol_p(sexp))
-                return bfalse;
-        for (i = 0; i < symbol_length(sexp); i++)
-                putchar(symbol_store(sexp)[i]);
-        return btrue;
+                return 0;
+        /* TODO: unprintable (including zero-length) symbols */
+        if (rem == 0)
+                return -1;
+        for (i = 0; rem > 0 && i < symbol_length(sexp); i++, rem--)
+                buf[i] = symbol_store(sexp)[i];
+        if (i != symbol_length(sexp)) {
+                buf[i - 1] = '\0';
+                return -i;
+        }
+        buf[i] = '\0';
+        return i;
 }
 
 @*1 Secret Objects. The hidden |syntax| object prints its syntactic
 form and then itself.
 
 @c
-boolean
+ssize_t
 write_syntax(cell sexp,
+             char *buf,
+             ssize_t rem,
              int depth)
 {
+        ssize_t len = 0;
         if (!syntax_p(sexp))
-                return bfalse;
-        else if (car(sexp) == sym(SYNTAX_DOTTED))   printf(". ");
-        else if (car(sexp) == sym(SYNTAX_QUASI))    printf("`");
-        else if (car(sexp) == sym(SYNTAX_QUOTE))    printf("'");
-        else if (car(sexp) == sym(SYNTAX_UNQUOTE))  printf(",");
-        else if (car(sexp) == sym(SYNTAX_UNSPLICE)) printf(",@@");
-        write_form(cdr(sexp), depth + 1);
-        return btrue;
+                return 0;
+        else if (car(sexp) == sym(SYNTAX_DOTTED))   append(buf, rem, ". ", len);
+        else if (car(sexp) == sym(SYNTAX_QUASI))    append(buf, rem, "`", len);
+        else if (car(sexp) == sym(SYNTAX_QUOTE))    append(buf, rem, "'", len);
+        else if (car(sexp) == sym(SYNTAX_UNQUOTE))  append(buf, rem, ",", len);
+        else if (car(sexp) == sym(SYNTAX_UNSPLICE)) append(buf, rem, ",@@", len);
+        append_write(buf, rem, cdr(sexp), depth + 1, len);
+        return len;
 }
 
 @*1 Environment Objects. An |environment| prints its own layer
 and then the layers above it.
 
 @c
-boolean
+ssize_t
 write_environment(cell sexp,
+                  char *buf,
+                  ssize_t rem,
                   int depth)
 {
+        ssize_t len = 0;
         if (!environment_p(sexp))
-                return bfalse;
-        printf("#<environment ");
-        write_form(env_layer(sexp), depth + 1);
+                return 0;
+        append(buf, rem, "#<environment ", len);
+        append_write(buf, rem, env_layer(sexp), depth, len);
         if (!null_p(env_parent(sexp))) {
-                printf(" ON ");
-                write_form(env_parent(sexp), depth + 1);
-                printf(">");
+                append(buf, rem, " ON ", len);
+                append_write(buf, rem, env_parent(sexp), depth + 1, len);
+                append(buf, rem, ">", len);
         } else
-                printf(" ROOT>");
-        return btrue;
+                append(buf, rem, " ROOT>", len);
+        return len;
+}
+
+@*1 Exception Objects. These just need to look dangerous so they
+are in ALL CAPS.
+
+@c
+ssize_t
+write_exception (cell sexp,
+                  char *buf,
+                  ssize_t rem,
+                 int depth)
+{
+        ssize_t len = 0;
+        if (!exception_p(sexp))
+                return 0;
+        append(buf, rem, "#<EXCEPTION ", len);
+        append_write(buf, rem, ex_id(sexp), depth, len);
+        append(buf, rem, " ", len);
+        append_write(buf, rem, ex_detail(sexp), depth + 1, len);
+        append(buf, rem, ">", len);
+        return len;
 }
 
 @*1 Sequential Objects. The routines for a |list| and |vector| are
@@ -2501,83 +2598,128 @@ after each form but the last, with the appropriate delimiters.
 |list|s also need to deal with being improper.
 
 @c
-boolean
+ssize_t
 write_list(cell sexp,
+           char *buf,
+           ssize_t rem,
            int depth)
 {
+        ssize_t len = 0;
         if (!pair_p(sexp))
-                return bfalse;
-        printf("(");
+                return 0;
+        append(buf, rem, "(", len);
         while (pair_p(sexp)) {
-                write_form(car(sexp), depth + 1);
+                append_write(buf, rem, car(sexp), depth + 1, len);
                 if (pair_p(cdr(sexp)) || syntax_p(cdr(sexp)))
-                        printf(" ");
+                        append(buf, rem, " ", len);
                 else if (!null_p(cdr(sexp))
                          && !pair_p(cdr(sexp))
                          && !syntax_p(cdr(sexp)))
-                        printf(" . ");
+                        append(buf, rem, " . ", len);
                 sexp = cdr(sexp);
         }
         if (!null_p(sexp))
-                write_form(sexp, depth + 1);
-        printf(")");
-        return btrue;
+                append_write(buf, rem, sexp, depth + 1, len);
+        append (buf, rem, ")", len);
+        return len;
 }
 
-boolean
+ssize_t
 write_vector(cell sexp,
+             char *buf,
+             ssize_t rem,
              int depth)
 {
         int i;
+        ssize_t len = 0;
         if (!vector_p(sexp))
-                return bfalse;
-        printf("[");
+                return 0;
+        append(buf, rem, "[", len);
         for (i = 0; i < vector_length(sexp); i++) {
-                write_form(vector_ref(sexp, i), depth + 1);
+                append_write(buf, rem, vector_ref(sexp, i), depth + 1, len);
                 if (i + 1 < vector_length(sexp))
-                        printf(" ");
+                        append(buf, rem, " ", len);
         }
-        printf("]");
-        return btrue;
+        append(buf, rem, "]", len);
+        return len;
 }
+
+@ For the time being |write_bytecode| is only called (directly)
+by the unit tests; there is no object that represents bytecode for
+|write_form| to detect.
+
+@c
+ssize_t
+write_bytecode (cell sexp,
+                char *buf,
+                ssize_t rem,
+                int depth)
+{
+        int arg, ins, op;
+        ssize_t len = 1;
+        if (rem <= 0)
+                return -1;
+        *buf++ = '{';
+        rem--;
+        op = 0;
+        while (op < vector_length(sexp)) {
+                if (op)
+                        append(buf, rem, " ", len);
+                ins = int_value(vector_ref(sexp, op));
+                append(buf, rem, OP[ins].name, len);
+                for (arg = 1; arg <= OP[ins].nargs; arg++) {
+                        append(buf, rem, " ", len);
+                        append_write(buf, rem, vector_ref(sexp, op + arg), depth + 1, len);
+                }
+                op += 1 + OP[ins].nargs;
+        }
+        append(buf, rem, "}", len);
+        return len;
+}
+
 
 @ |write_form| simply calls each writer in turn, stopping after the
 first one returning (\CEE/'s) true.
 
 @c
-void
+ssize_t
 write_form (cell sexp,
+            char *buf,
+            ssize_t rem,
             int  depth)
 {
+        ssize_t len = 0;
         if (Interrupt) {
                 if (!depth)
-                        printf("... \n");
-                return;
+                        append(buf, rem, "... ", len);
+                return len;
         }
         if (depth > WRITER_MAX_DEPTH)
                 error(ERR_RECURSION, NIL);
         if (undefined_p(sexp))
-                printf("#><"); /* nothing should ever print this */
+                append(buf, rem, "#><", len); /* nothing should ever print this */
         else if (eof_p(sexp))
-                printf("#<eof>");
+                append(buf, rem, "#<eof>", len);
         else if (false_p(sexp))
-                printf("#f");
+                append(buf, rem, "#f", len);
         else if (null_p(sexp))
-                printf("()");
+                append(buf, rem, "()", len);
         else if (true_p(sexp))
-                printf("#t");
+                append(buf, rem, "#t", len);
         else if (void_p(sexp))
-                printf("#<>");
-        else if (write_applicative(sexp, depth)) /* NOP */@+;
-        else if (write_compiler(sexp, depth))    /* NOP */@+;
-        else if (write_environment(sexp, depth)) /* NOP */@+;
-        else if (write_integer(sexp, depth))     /* NOP */@+;
-        else if (write_list(sexp, depth))        /* NOP */@+;
-        else if (write_operative(sexp, depth))   /* NOP */@+;
-        else if (write_symbol(sexp, depth))      /* NOP */@+;
-        else if (write_syntax(sexp, depth))      /* NOP */@+;
-        else if (write_vector(sexp, depth))      /* NOP */@+;
-        else printf("#<wtf?>");                  /* impossibru! */
+                append(buf, rem, "#<>", len);
+        else if ((len = write_applicative(sexp, buf, rem, depth))) /* NOP */@+;
+        else if ((len = write_compiler(sexp, buf, rem, depth)))    /* NOP */@+;
+        else if ((len = write_environment(sexp, buf, rem, depth))) /* NOP */@+;
+        else if ((len = write_exception(sexp, buf, rem, depth)))   /* NOP */@+;
+        else if ((len = write_integer(sexp, buf, rem, depth)))     /* NOP */@+;
+        else if ((len = write_list(sexp, buf, rem, depth)))        /* NOP */@+;
+        else if ((len = write_operative(sexp, buf, rem, depth)))   /* NOP */@+;
+        else if ((len = write_symbol(sexp, buf, rem, depth)))      /* NOP */@+;
+        else if ((len = write_syntax(sexp, buf, rem, depth)))      /* NOP */@+;
+        else if ((len = write_vector(sexp, buf, rem, depth)))      /* NOP */@+;
+        else append(buf, rem, "#<wtf?>", len);                     /* impossibru! */
+        return len;
 }
 
 @** Opcodes. With the core infrastucture out of the way we can
@@ -2601,44 +2743,45 @@ enum {
         OP_APPLY,
         OP_APPLY_TAIL,
         OP_CAR,
-        OP_CDR, /* 3 */
+        OP_CDR,
         OP_COMPILE,
         OP_CONS,
         OP_CYCLE,
-        OP_ENVIRONMENT_P, /* 7 */
+        OP_ENVIRONMENT_P,
         OP_ENV_MUTATE_M,
         OP_ENV_QUOTE,
         OP_ENV_ROOT,
-        OP_ENV_SET_ROOT_M, /* 11 */
+        OP_ENV_SET_ROOT_M,
         OP_ERROR,
         OP_HALT,
         OP_JUMP,
-        OP_JUMP_FALSE, /* 15 */
+        OP_JUMP_FALSE,
         OP_JUMP_TRUE,
         OP_LAMBDA,
         OP_LIST_P,
-        OP_LIST_REVERSE, /* 19 */
+        OP_LIST_REVERSE,
         OP_LIST_REVERSE_M,
         OP_LOOKUP,
         OP_NIL,
-        OP_NOOP, /* 23 */
+        OP_NOOP,
         OP_NULL_P,
         OP_PAIR_P,
         OP_PEEK,
-        OP_POP, /* 27 */
+        OP_POP,
         OP_PUSH,
         OP_QUOTE,
         OP_RETURN,
-        OP_RUN, /* 31 */
+        OP_RUN,
         OP_RUN_THERE,
         OP_SET_CAR_M,
         OP_SET_CDR_M,
-        OP_SNOC, /* 35 */
+        OP_SNOC,
         OP_SWAP,
+        OP_SYMBOL_P,
         OP_SYNTAX,
         OP_VOV,
 #ifdef LL_TEST
-        @<Testing opcodes@>@;
+        @<Testing opcode names@>@;
 #endif
         OPCODE_MAX
 };
@@ -2648,10 +2791,68 @@ enum {
 enum {
 /* Ensure testing opcodes translate into undefined behaviour */
         OP_TEST_UNDEFINED_BEHAVIOUR = 0xf00f,
-        @<Testing opcodes@>@;
+        @<Testing opcode names@>@;
         OPTEST_MAX
 };
 #endif
+
+@ @<Type def...@>=
+typedef struct {
+        char *name;
+        int nargs;
+} opcode;
+
+@ @<Extern...@>=
+extern opcode OP[OPCODE_MAX];
+
+@ @<Global var...@>=
+opcode OP[OPCODE_MAX] = {
+        [OP_APPLY]          = { .name = "OP_APPLY",          .nargs = 1 },
+        [OP_APPLY_TAIL]     = { .name = "OP_APPLY_TAIL",     .nargs = 1 },
+        [OP_CAR]            = { .name = "OP_CAR",            .nargs = 0 },
+        [OP_CDR]            = { .name = "OP_CDR",            .nargs = 0 },
+        [OP_COMPILE]        = { .name = "OP_COMPILE",        .nargs = 0 },
+        [OP_CONS]           = { .name = "OP_CONS",           .nargs = 0 },
+        [OP_CYCLE]          = { .name = "OP_CYCLE",          .nargs = 0 },
+        [OP_ENVIRONMENT_P]  = { .name = "OP_ENVIRONMENT_P",  .nargs = 0 },
+        [OP_ENV_MUTATE_M]   = { .name = "OP_ENV_MUTATE_M",   .nargs = 2 },
+        [OP_ENV_QUOTE]      = { .name = "OP_ENV_QUOTE",      .nargs = 0 },
+        [OP_ENV_ROOT]       = { .name = "OP_ENV_ROOT",       .nargs = 0 },
+        [OP_ENV_SET_ROOT_M] = { .name = "OP_ENV_SET_ROOT_M", .nargs = 0 },
+        [OP_ERROR]          = { .name = "OP_ERROR",          .nargs = 0 },
+        [OP_HALT]           = { .name = "OP_HALT",           .nargs = 0 },
+        [OP_JUMP]           = { .name = "OP_JUMP",           .nargs = 1 },
+        [OP_JUMP_FALSE]     = { .name = "OP_JUMP_FALSE",     .nargs = 1 },
+        [OP_JUMP_TRUE]      = { .name = "OP_JUMP_TRUE",      .nargs = 1 },
+        [OP_LAMBDA]         = { .name = "OP_LAMBDA",         .nargs = 1 },
+        [OP_LIST_P]         = { .name = "OP_LIST_P",         .nargs = 2 },
+        [OP_LIST_REVERSE]   = { .name = "OP_LIST_REVERSE",   .nargs = 2 },
+        [OP_LIST_REVERSE_M] = { .name = "OP_LIST_REVERSE_M", .nargs = 0 },
+        [OP_LOOKUP]         = { .name = "OP_LOOKUP",         .nargs = 0 },
+        [OP_NIL]            = { .name = "OP_NIL",            .nargs = 0 },
+        [OP_NOOP]           = { .name = "OP_NOOP",           .nargs = 0 },
+        [OP_NULL_P]         = { .name = "OP_NULL_P",         .nargs = 0 },
+        [OP_PAIR_P]         = { .name = "OP_PAIR_P",         .nargs = 0 },
+        [OP_PEEK]           = { .name = "OP_PEEK",           .nargs = 0 },
+        [OP_POP]            = { .name = "OP_POP",            .nargs = 0 },
+        [OP_PUSH]           = { .name = "OP_PUSH",           .nargs = 0 },
+        [OP_QUOTE]          = { .name = "OP_QUOTE",          .nargs = 1 },
+        [OP_RETURN]         = { .name = "OP_RETURN",         .nargs = 0 },
+        [OP_RUN]            = { .name = "OP_RUN",            .nargs = 0 },
+        [OP_RUN_THERE]      = { .name = "OP_RUN_THERE",      .nargs = 0 },
+        [OP_SET_CAR_M]      = { .name = "OP_SET_CAR_M",      .nargs = 0 },
+        [OP_SET_CDR_M]      = { .name = "OP_SET_CDR_M",      .nargs = 0 },
+        [OP_SNOC]           = { .name = "OP_SNOC",           .nargs = 0 },
+        [OP_SWAP]           = { .name = "OP_SWAP",           .nargs = 0 },
+        [OP_SYMBOL_P]       = { .name = "OP_SYMBOL_P",       .nargs = 0 },
+        [OP_SYNTAX]         = { .name = "OP_SYNTAX",         .nargs = 1 },
+        [OP_VOV]            = { .name = "OP_VOV",            .nargs = 1 },
+#ifdef LL_TEST
+        @<Testing opcodes@>@;
+#endif
+};
+
+/* TODO: also test opcodes */
 
 @* Basic Flow Control. The most basic opcodes that the virtual machine
 needs are those which control whether to operate and where.
@@ -2856,34 +3057,22 @@ work with global state or be idempotent.
 In order to apply the arguments (if any) to the |closure| it must
 be entered by one of the opcodes |OP_APPLY| or |OP_APPLY_TAIL|.
 |OP_APPLY_TAIL| works identically to |OP_APPLY| and then consumes
-the stack frame which |OP_APPLY| created, allowing for {\it proper
-tail recursion} with further support from the compiler.
+the stack frame which was created, allowing for {\it proper tail
+recursion} with further support from the compiler.
 
 @<Opcode imp...@>=
 case OP_APPLY:@/
-        @<Enter a |closure|@>@;
-        break;
 case OP_APPLY_TAIL:@/
-        @<Enter a |closure|@>@;
-        frame_consume();
+        tmp = fetch(1);
+        vms_push(env_lift_stack(cadr(tmp), car(tmp)));
+        frame_push(2);
+        frame_enter(vms_pop(), caddr(tmp), int_value(cadddr(tmp)));
+        if (ins == OP_APPLY_TAIL)
+                frame_consume();
         break;
 case OP_RETURN:@/
         frame_leave();
         break;
-
-@ Whether in tail position or not, entering a |closure| is the same.
-
-% This should be a function.
-@<Enter a |closure|@>=
-{
-        cell e, i, p;
-        tmp = fetch(2);
-        e = env_lift_stack(cadr(tmp), int_value(fetch(1)), car(tmp));
-        p = caddr(tmp);
-        i = int_value(cadddr(tmp));
-        frame_push(3);
-        frame_enter(e, p, i);
-}
 
 @ Creating a closure in the first place follows an identical procedure
 whether it's an applicative or an operative but creates a different
@@ -3037,15 +3226,13 @@ cell
 compile (cell source)
 {
         cell r;
-        vms_push(source);
         Compilation = vector_new(COMPILATION_SEGMENT, int_new(OP_HALT));
         Here = 0;
         cts_reset();
         compile_expression(source, 1);
         emitop(OP_RETURN);
         r = vector_sub(Compilation, 0, Here, 0, Here, VOID);
-        Compilation = NIL;
-        vms_clear();
+        Compilation = Zero_Vector;
         if (!null_p(CTS))
                 error(ERR_COMPILE_DIRTY, source);
         return r;
@@ -3165,7 +3352,20 @@ list.
 @d ERR_ARITY_MISSING "missing"
 @d ERR_ARITY_SYNTAX  "syntax"
 @d arity_error(e,c,a) error((e), cons((c), (a)))
-@c
+@<Global var...@>=
+cell Sym_ERR_ARITY_EXTRA = NIL;
+cell Sym_ERR_ARITY_MISSING = NIL;
+cell Sym_ERR_ARITY_SYNTAX = NIL;
+
+@ @<Extern...@>=
+extern cell Sym_ERR_ARITY_EXTRA, Sym_ERR_ARITY_MISSING, Sym_ERR_ARITY_SYNTAX;
+
+@ @<Global init...@>=
+Sym_ERR_ARITY_EXTRA = sym(ERR_ARITY_EXTRA);
+Sym_ERR_ARITY_MISSING = sym(ERR_ARITY_MISSING);
+Sym_ERR_ARITY_SYNTAX = sym(ERR_ARITY_SYNTAX);
+
+@ @c
 cell
 arity (cell    op,
        cell    args,
@@ -3368,7 +3568,6 @@ else if (!null_p(a))
 @<Evaluate required arguments onto the stack@>@;
 cts_clear();
 emitop(tail_p ? OP_APPLY_TAIL : OP_APPLY);
-emit(int_new(nargs));
 emit(combiner);
 
 @ It's a syntax error if the arguments are not a proper list,
@@ -3557,7 +3756,6 @@ if (a) {
         emitop(OP_NIL);
 
 emitop(tail_p ? OP_APPLY_TAIL : OP_APPLY);
-emit(int_new(3));
 emit(combiner);
 
 @* Conditionals (|if|). Although you could define a whole language
@@ -3605,14 +3803,11 @@ compile_eval (cell op,
 {
         cell more, sexp, eenv;
         int goto_env_p;
-        more = arity(op, args, 1, 1);
+        more = arity(op, args, 1, btrue);
         sexp = cts_pop();
-        arity_next(op, args, more, 0, 1);
+        arity_next(op, args, more, bfalse, btrue);
         eenv = cts_pop();
-        if (undefined_p(eenv)) {
-                emitop(OP_ENV_QUOTE);
-                emitop(OP_PUSH);
-        } else {
+        if (!undefined_p(eenv)) {
                 compile_expression(eenv, 0);
                 emitop(OP_PUSH);
                 emitop(OP_ENVIRONMENT_P);
@@ -3624,7 +3819,7 @@ compile_eval (cell op,
         }
         compile_expression(sexp, 0);
         emitop(OP_COMPILE);
-        emitop(OP_RUN_THERE);
+        emitop(undefined_p(eenv) ? OP_RUN : OP_RUN_THERE);
 }
 
 @* Run-time Errors. |error| expects a symbol an the first position
@@ -3690,7 +3885,7 @@ compile_car (cell op,
         emitop(OP_JUMP_TRUE);
         comefrom_pair_p = Here;
         emit(NIL);
-        emitq(sym(ERR_UNEXPECTED)); /* TODO */
+        emitq(Sym_ERR_UNEXPECTED); /* TODO */
         emitop(OP_ERROR);
         patch(comefrom_pair_p, int_new(Here));
         emitop(OP_POP);
@@ -3710,7 +3905,7 @@ compile_cdr (cell op,
         emitop(OP_JUMP_TRUE);
         comefrom_pair_p = Here;
         emit(NIL);
-        emitq(sym(ERR_UNEXPECTED)); /* TODO */
+        emitq(Sym_ERR_UNEXPECTED); /* TODO */
         emitop(OP_ERROR);
         patch(comefrom_pair_p, int_new(Here));
         emitop(OP_POP);
@@ -4009,7 +4204,7 @@ need to do the work.
 
 When splicing into the tail position of a list we can replace its
 |NIL| with the evaluation with minimal further processing. Unfortunately
-we don't know until runtime whether we are splicing into the tail
+we don't know until run-time whether we are splicing into the tail
 position -- consider constructs like {\tt `(,@@foo ,@@bar)} where {\tt
 bar} evaluates to |NIL|.
 
@@ -4166,8 +4361,11 @@ size_t object_sizeof (cell);
 size_t object_sizeofref (cell);
 cell testing_build_probe (cell);
 
-@ @<Testing opcodes@>=
+@ @<Testing opcode names@>=
 OP_TEST_PROBE,
+
+@ @<Testing opcodes@>=
+[OP_TEST_PROBE] = { .name = "OP_VOV", .nargs = 1 },
 
 @ @<Testing imp...@>=
 case OP_TEST_PROBE:@/
@@ -4233,6 +4431,7 @@ object_sizeof (cell o)
         return s;
 }
 
+@ @c
 int
 object_copy_imp (cell o,
                  char *dst,
@@ -4270,6 +4469,7 @@ object_copy_imp (cell o,
         return p;
 }
 
+@ @c
 boolean
 object_compare (char *buf1,
                 size_t len,
@@ -4287,6 +4487,7 @@ object_compare (char *buf1,
         return r;
 }
 
+@ @c
 size_t
 object_sizeofref (cell o)
 {
@@ -4304,6 +4505,7 @@ object_sizeofref (cell o)
         return s;
 }
 
+@ @c
 int
 object_copyref_imp (cell o,
                     cell *dst,
@@ -4578,6 +4780,8 @@ test_count_free_list (void)
 {
         int r = 0;
         cell c = Cells_Free;
+        if (!Cells_Poolsize)
+                return 0;
         while (!null_p(c)) {
                 r++;
                 c = cdr(c);
@@ -4649,7 +4853,7 @@ implement its own |llt_Fixture| with this common header.
         llt_thunk act;      \
         llt_unit test;      \
         llt_thunk destroy;  \
-        boolean can_gc_p@; /* no semicolon */
+        boolean skip_gc_p@; /* no semicolon */
 
 @ The vast majority (all, so far) of unit tests follow the same
 simple structure. There are plans for more interactive tests but
@@ -4696,7 +4900,7 @@ boolean
 llt_main (llt_Fixture *suite)
 {
         int i;
-        int f0, f1;
+        int d, f0, f1;
         boolean all, ok;
         char buf[TEST_BUFSIZE] = {0}, *name;
         all = btrue;
@@ -4707,7 +4911,7 @@ llt_main (llt_Fixture *suite)
                 else
                         snprintf(buf, TEST_BUFSIZE, "%s", suite[i].name);
                 @<Unit test a single fixture@>@;
-                if (suite[i].can_gc_p) {
+                if ((d = f0 - f1) > 0 && !suite[i].skip_gc_p) {
                         @<Repeat the fixture with garbage collection@>
                 }
                 tap_more(all, ok, buf);
@@ -4720,11 +4924,9 @@ name = (char *) suite[i].name;
 suite[i].name = (char *) buf;
 if (suite[i].prepare)
         suite[i].prepare(suite + i);
-if (suite[i].can_gc_p)
-        f0 = test_count_free_list();
+f0 = test_count_free_list();
 suite[i].act(suite + i);
-if (suite[i].can_gc_p)
-        f1 = test_count_free_list();
+f1 = test_count_free_list();
 ok = suite[i].test(suite + i);
 if (suite[i].destroy)
         suite[i].destroy(suite + i);
@@ -4735,8 +4937,7 @@ that after the fixture is prepared |cons| is called repeatedly to
 waste cells before the fixture's action is taken.
 
 @<Repeat the fixture with garbage collection@>=
-int d, j, k;
-d = f0 - f1;
+int j, k;
 for (j = d; j >= 0; j--) {
         sprintf(buf, "%s: trigger gc at %d free cells",
                 name, j);
@@ -4748,11 +4949,17 @@ for (j = d; j >= 0; j--) {
         for (k = 0; k < d - j; k++)
                 cons(NIL, NIL);
         suite[i].act(suite + i);
-        ok = ok && suite[i].test(suite + i);
+        ok = suite[i].test(suite + i) && ok;
         if (suite[i].destroy)
                 suite[i].destroy(suite + i);
         suite[i].name = name;
 }
+if (suite[i].suffix)
+        snprintf(buf, TEST_BUFSIZE, "%s (%s)",
+                name, suite[i].suffix);
+else
+        snprintf(buf, TEST_BUFSIZE, "%s", name);
+suite[i].name = buf;
 
 @ @<Unit test body@>=
 llt_Fixture *
@@ -5026,6 +5233,7 @@ llt_Grow_Pool_fix (llt_Fixture *fix,
         fix->destroy = llt_Grow_Pool_destroy;
         fix->act = llt_Grow_Pool_act;
         fix->test = llt_Grow_Pool_test;
+        fix->skip_gc_p = btrue;
         fix->expect = LLT_GROW_POOL_SUCCESS;
         fix->allocations = -1;
         fix->Segment = HEAP_SEGMENT;
@@ -5257,6 +5465,7 @@ llt_Grow_Vector_Pool_fix (llt_Fixture *fix,
         fix->destroy = llt_Grow_Vector_Pool_destroy;
         fix->act = llt_Grow_Vector_Pool_act;
         fix->test = llt_Grow_Vector_Pool_test;
+        fix->skip_gc_p = btrue;
         fix->expect = LLT_GROW_VECTOR_POOL_SUCCESS;
         fix->allocations = -1;
         fix->Segment = HEAP_SEGMENT;
@@ -6047,7 +6256,6 @@ llt_GC_Sweep_prepare (llt_Fixture *fix)
 {
         if (fix->preinit_p) {
                 Cells_Poolsize = 0;
-                Cells_Free = UNDEFINED;
                 return;
         }
         vms_push(cons(NIL, NIL));
@@ -6075,7 +6283,7 @@ llt_GC_Sweep_act (llt_Fixture *fix)
 boolean
 llt_GC_Sweep_test (llt_Fixture *fix)
 {
-        char buf[TEST_BUFSIZE];
+        char buf[TEST_BUFSIZE] = {0};
         cell f;
         boolean ok, mark_ok_p, free_ok_p;
         int i, rem;
@@ -6083,9 +6291,7 @@ llt_GC_Sweep_test (llt_Fixture *fix)
         ok = tap_ok(fix->ret_val == rem,
                 fpmsgf("sweep returns the number of free cells (%d)", rem));
         @#
-        i = 0;
-        for (f = Cells_Free; !null_p(f); f = cdr(f))@/
-                i++;
+        i = test_count_free_list();
         tap_more(ok, i == rem,
                 fpmsgf("the number of free cells is correct (%d)", rem));
         @#
@@ -6115,6 +6321,7 @@ llt_GC_Sweep_fix (llt_Fixture *fix,
         fix->destroy = llt_GC_Sweep_destroy;
         fix->act = llt_GC_Sweep_act;
         fix->test = llt_GC_Sweep_test;
+        fix->skip_gc_p = btrue;
         return fix;
 }
 
@@ -6470,11 +6677,13 @@ llt_GC_Vector__All (void)
 
 @*1 Objects.
 
-@d LLT_TEST_VARIABLE sym("test-variable")
-@d LLT_VALUE_MARCO sym("marco?")
-@d LLT_VALUE_POLO sym("polo!")
-@d LLT_VALUE_FISH sym("fish...")
+@d LLT_TEST_VARIABLE "test-variable"
+@d LLT_VALUE_MARCO "marco?"
+@d LLT_VALUE_POLO "polo!"
+@d LLT_VALUE_FISH "fish..."
 @c
+
+@*2 Closures.
 
 @*2 Environments.
 
@@ -6502,7 +6711,8 @@ struct llt_Fixture {
         cell    (*search_fn) (cell, cell);
                               /* |env_search|/|env_here| */
         int       stack;      /* how many stack items */
-        cell      sym_var[3]; /* prepared symbol objects */
+        cell      sym_mpf[3]; /* prepared symbol objects */
+        cell      sym_var[3];
         cell      sym_val[3];
         boolean   want_ex_p;  /* will an error be raised? */
 };
@@ -6527,6 +6737,9 @@ llt_Environments_prepare (llt_Fixture *fix)
         char buf[TEST_BUFSIZE] = {0};
         cell e[3];
         int i;
+        fix->sym_mpf[0] = sym(LLT_VALUE_MARCO);
+        fix->sym_mpf[1] = sym(LLT_VALUE_POLO);
+        fix->sym_mpf[2] = sym(LLT_VALUE_FISH);
         @<Unit test part: prepare |environment| layers@>@;
         if (fix->stack) {
                 @<Unit test part: prepare liftable stack@>
@@ -6546,7 +6759,7 @@ if (fix->layers > 2)
         Env = e[2] = env_extend(e[1]);
 for (i = 0; i < fix->layers; i++)
         if (!null_p(fix->layer[i]))
-                env_set(e[i], LLT_VALUE_MARCO, fix->layer[i], btrue);
+                env_set(e[i], fix->sym_mpf[0], fix->layer[i], btrue);
 fix->save_Env = llt_copy_object(Env, btrue);
 fix->save_RTSp = RTSp;
 for (i = 0; i < 3; i++) {
@@ -6593,7 +6806,7 @@ llt_Environments_destroy (llt_Fixture *fix __unused)
 @<Unit test: environment objects@>=
 llt_Fixture *
 llt_Environments_fix (llt_Fixture *fix,
-                  const char *name)
+                      const char *name)
 {
         fix->name = name;
         fix->prepare = llt_Environments_prepare;
@@ -6630,7 +6843,7 @@ TODO: tests with a populated environment.
 void
 llt_Environments__Search_act (llt_Fixture *fix)
 {
-        fix->ret_val = fix->search_fn(Env, LLT_VALUE_MARCO);
+        fix->ret_val = fix->search_fn(Env, fix->sym_mpf[0]);
 }
 
 @ @<Unit test: environment objects@>=
@@ -6639,7 +6852,7 @@ llt_Environments__Search_test (llt_Fixture *fix)
 {
         char buf[TEST_BUFSIZE] = {0};
         if (true_p(fix->expect))
-                return tap_ok(fix->ret_val == LLT_VALUE_POLO,
+                return tap_ok(fix->ret_val == fix->sym_mpf[1],
                         fpmsgf("variable is found & correct"));
         else
                 return tap_ok(undefined_p(fix->ret_val),
@@ -6670,7 +6883,7 @@ llt_Environments__Search_Single_Layer (void)
         f[0].expect = f[1].expect = FALSE;
         f[2].suffix = "env_search: present";
         f[3].suffix = "env_here: present";
-        f[2].layer[0] = f[3].layer[0] = LLT_VALUE_POLO;
+        f[2].layer[0] = f[3].layer[0] = sym(LLT_VALUE_POLO);
         f[2].expect = f[3].expect = TRUE;
         return f;
 }
@@ -6698,12 +6911,12 @@ llt_Environments__Search_Multi_Simple (void)
         f[0].suffix = "env_search: present in top";
         f[1].suffix = "env_here: present in top";
         f[0].expect = f[1].expect = TRUE;
-        f[0].layer[2] = f[1].layer[2] = LLT_VALUE_POLO;
+        f[0].layer[2] = f[1].layer[2] = sym(LLT_VALUE_POLO);
         f[2].suffix = "env_search: present in parent";
         f[3].suffix = "env_here: present in parent";
         f[2].expect = TRUE;
         f[3].expect = FALSE;
-        f[2].layer[1] = f[3].layer[1] = LLT_VALUE_POLO;
+        f[2].layer[1] = f[3].layer[1] = sym(LLT_VALUE_POLO);
         f[4].suffix = "env_search: not present";
         f[5].suffix = "env_here: not present";
         f[4].expect = f[5].expect = FALSE;
@@ -6733,14 +6946,14 @@ llt_Environments__Search_Multi_Masked (void)
         f[0].suffix = "env_search: present in top, conflict in parent";
         f[1].suffix = "env_here: present in top, conflict in parent";
         f[0].expect = f[1].expect = TRUE;
-        f[0].layer[2] = f[1].layer[2] = LLT_VALUE_POLO;
-        f[0].layer[1] = f[1].layer[1] = LLT_VALUE_FISH;
+        f[0].layer[2] = f[1].layer[2] = sym(LLT_VALUE_POLO);
+        f[0].layer[1] = f[1].layer[1] = sym(LLT_VALUE_FISH);
         f[2].suffix = "env_search: present in parent, conflict in ancestor";
         f[3].suffix = "env_here: present in parent, conflict in ancestor";
         f[2].expect = TRUE;
         f[3].expect = FALSE;
-        f[2].layer[1] = f[3].layer[1] = LLT_VALUE_POLO;
-        f[2].layer[0] = f[3].layer[0] = LLT_VALUE_FISH;
+        f[2].layer[1] = f[3].layer[1] = sym(LLT_VALUE_POLO);
+        f[2].layer[0] = f[3].layer[0] = sym(LLT_VALUE_FISH);
         return f;
 }
 
@@ -6760,8 +6973,9 @@ TODO: verify that the old binding is removed.
 void
 llt_Environments__Set_act (llt_Fixture *fix)
 {
+        fix->had_ex_p = bfalse;
         if (!setjmp(Goto_Error))
-                env_set(Env, LLT_VALUE_MARCO, LLT_VALUE_POLO, fix->new_p);
+                env_set(Env, fix->sym_mpf[0], fix->sym_mpf[1], fix->new_p);
         else
                 fix->had_ex_p = btrue;
 }
@@ -6780,18 +6994,18 @@ llt_Environments__Set_test (llt_Fixture *fix)
                 ok = tap_ok(fix->had_ex_p,
                         fpmsgf("an error was raised"));
                 if (fix->new_p) {
-                        tap_again(ok, ex_id(Acc) == sym(ERR_BOUND)
-                                        && ex_detail(Acc) == LLT_VALUE_MARCO,
+                        tap_again(ok, ex_id(Acc) == Sym_ERR_BOUND
+                                        && ex_detail(Acc) == fix->sym_mpf[0],
                                 fpmsgf("the error is bound marco"));
                 } else {
-                        tap_again(ok, ex_id(Acc) == sym(ERR_UNBOUND)
-                                        && ex_detail(Acc) == LLT_VALUE_MARCO,
+                        tap_again(ok, ex_id(Acc) == Sym_ERR_UNBOUND
+                                        && ex_detail(Acc) == fix->sym_mpf[0],
                                 fpmsgf("the error is unbound marco"));
                 }
         } else
                 ok = tap_ok(!fix->had_ex_p,
                         fpmsgf("an error was not raised"));
-        found = env_search(Env, LLT_VALUE_MARCO);
+        found = env_search(Env, fix->sym_mpf[0]);
         tap_more(ok, found == fix->expect,
                 fpmsgf("the variable has the correct value"));
         return ok;
@@ -6813,27 +7027,26 @@ llt_Environments__Set (void)
                 f[i].test = llt_Environments__Set_test;
                 f[i].layers = 2;
                 f[i].new_p = !(i % 2);
-                f[i].can_gc_p = btrue;
         }
         f[0].suffix = "define: already present";
         f[1].suffix = "set: already present";
-        f[0].layer[1] = f[1].layer[1] = LLT_VALUE_FISH;
+        f[0].layer[1] = f[1].layer[1] = sym(LLT_VALUE_FISH);
         f[0].layer[0] = f[1].layer[0] = NIL;
         f[0].want_ex_p = btrue;
-        f[0].expect = LLT_VALUE_FISH;
-        f[1].expect = LLT_VALUE_POLO;
+        f[0].expect = sym(LLT_VALUE_FISH);
+        f[1].expect = sym(LLT_VALUE_POLO);
         f[2].suffix = "define: in an ancestor";
         f[3].suffix = "set: in an ancestor";
         f[2].layer[1] = f[3].layer[1] = NIL;
-        f[2].layer[0] = f[3].layer[0] = LLT_VALUE_FISH;
-        f[2].expect = LLT_VALUE_POLO;
+        f[2].layer[0] = f[3].layer[0] = sym(LLT_VALUE_FISH);
+        f[2].expect = sym(LLT_VALUE_POLO);
         f[3].want_ex_p = btrue;
-        f[3].expect = LLT_VALUE_FISH;
+        f[3].expect = sym(LLT_VALUE_FISH);
         f[4].suffix = "define: not in the environment";
         f[5].suffix = "set: not in the environment";
         f[4].layer[1] = f[5].layer[1] = NIL;
         f[4].layer[0] = f[5].layer[0] = NIL;
-        f[4].expect = LLT_VALUE_POLO;
+        f[4].expect = sym(LLT_VALUE_POLO);
         f[5].want_ex_p = btrue;
         f[5].expect = UNDEFINED;
         return f;
@@ -6942,7 +7155,6 @@ llt_Environments__Lift_Stack (void)
                 f[i].layer[0] = NIL;
                 f[i].proper_p = btrue;
                 f[i].formals = NIL;
-                f[i].can_gc_p = btrue;
         }
         f[i=0].suffix = "NIL";
         f[++i].suffix = "symbol";
@@ -6974,6 +7186,1015 @@ llt_Environments__Lift_Stack (void)
         f[  i].null_pos = 2;
         return f;
 }
+
+@*2 Frames.
+
+@*2 Lists \AM\ Pairs.
+
+@*2 Numbers.
+
+@*2 Symbols.
+
+@*2 Vectors.
+
+@*1 Interpreter.
+
+@(t/interpreter.c@>=
+@<Unit test header@>@;
+
+struct llt_Fixture {
+        LLT_FIXTURE_HEADER;
+        @<Unit test part: interpreter fixture flags@>@;
+        @<Unit test part: interpreter fixture mutators \AM\ registers@>@;
+        @<Unit test part: interpreter fixture state backup@>@;
+};
+
+@<Unit test body@>@;
+
+@<Unit test: Interpreter@>@;
+
+llt_fixture Test_Fixtures[] = {@|
+        llt_Interpreter__OP_CYCLE,
+        llt_Interpreter__OP_ENV_MUTATE_M,
+        llt_Interpreter__OP_HALT,
+        llt_Interpreter__OP_JUMP,
+        llt_Interpreter__OP_JUMP_FALSE,
+        llt_Interpreter__OP_JUMP_TRUE,
+        llt_Interpreter__OP_LOOKUP,
+        llt_Interpreter__OP_NOOP,
+        llt_Interpreter__OP_SNOC,
+        llt_Interpreter__OP_SWAP,
+        NULL@/
+};
+
+@ Flags (etc.) which instruct the testing.
+
+@<Unit test part: interpreter fixture flags@>=
+boolean custom_p;    /* whether |Prog| was prepared already */
+boolean env_found_p; /* whether the variable should be found */
+cell    env_new_p;   /* whether to set a new variable */
+int     extra_stack; /* extra noise to include in the stack */
+boolean had_ex_p;    /* was an error raised? */
+int     opcode;      /* the opcode under test */
+cell    set_Acc;     /* what to put in |Acc| */
+cell    sym_mpft[4]; /* prepared symbol objects */
+boolean want_ex_p;   /* will an error be raised? */
+
+@ Predicates indicating whether the indicated state is expected to
+mutate, and the new values registers are expected to contain.
+
+@<Unit test part: interpreter fixture mutators \AM\ registers@>=
+boolean mutate_Acc_p;
+boolean mutate_Env_p;
+boolean mutate_Fp_p;
+boolean mutate_Ip_p;
+boolean mutate_Prog_p;
+boolean mutate_RTS_p;
+boolean mutate_RTSp_p;
+boolean mutate_Root_p;
+boolean mutate_VMS_p;
+@#
+int     want_Ip;
+int     want_Fp;
+int     want_RTSp;
+
+@ Copies of interpreter state immediately prior to performing each
+test. |backup_Env| is a pointer to the original |Env| which is saved
+in |VMS|, not a copy.
+
+@<Unit test part: interpreter fixture state backup@>=
+cell      backup_Env;
+llt_copy *save_Acc;
+llt_copy *save_Env;
+llt_copy *save_Prog;
+llt_copy *save_RTS;
+llt_copy *save_Root;
+llt_copy *save_VMS;
+int       save_Fp;
+jmp_buf   save_goto;
+int       save_Ip;
+int       save_RTSp;
+
+@ The simplest opcodes rely on being the only instruction in |Prog|
+immediately followed by |OP_HALT|. More complex tests define |Prog|
+in their own prepare phase. State is not copied if it's expected
+to mutate to save time.
+
+@<Unit test: Interpreter@>=
+void
+llt_Interpreter_prepare (llt_Fixture *fix)
+{
+        fix->sym_mpft[0] = sym(LLT_VALUE_MARCO);
+        fix->sym_mpft[1] = sym(LLT_VALUE_POLO);
+        fix->sym_mpft[2] = sym(LLT_VALUE_FISH);
+        fix->sym_mpft[3] = sym(LLT_TEST_VARIABLE);
+        if (!fix->custom_p) {
+                Prog = vector_new(2, int_new(OP_HALT));
+                vector_ref(Prog, 0) = int_new(fix->opcode);
+                Ip = 0;
+        }
+        if (!fix->mutate_Acc_p)
+                fix->save_Acc = llt_copy_object(Acc, bfalse);
+        if (!fix->mutate_Prog_p)
+                fix->save_Prog = llt_copy_object(Prog, bfalse);
+        if (!fix->mutate_Env_p)
+                fix->save_Env = llt_copy_object(Env, bfalse);
+        if (!fix->mutate_Root_p)
+                fix->save_Root = llt_copy_object(Root, bfalse);
+        if (!fix->mutate_VMS_p)
+                fix->save_VMS = llt_copy_object(VMS, bfalse);
+        if (!fix->mutate_RTS_p)
+                fix->save_RTS = llt_copy_object(RTS, bfalse);
+        if (!fix->mutate_Fp_p)
+                fix->save_Fp = Fp;
+        if (!fix->mutate_Ip_p)
+                fix->save_Ip = Ip;
+        if (!fix->mutate_RTSp_p)
+                fix->save_RTSp = RTSp;
+        bcopy(Goto_Error, fix->save_goto, sizeof (jmp_buf));
+        Error_Handler = btrue;
+}
+
+@ @<Unit test: Interpreter@>=
+void
+llt_Interpreter_destroy (llt_Fixture *fix)
+{
+        free(fix->save_Acc);
+        free(fix->save_Env);
+        free(fix->save_Prog);
+        free(fix->save_RTS);
+        free(fix->save_Root);
+        free(fix->save_VMS);
+        VMS = RTS = NIL;
+        RTSp = -1;
+        RTS_Size = 0;
+        bcopy(fix->save_goto, Goto_Begin, sizeof (jmp_buf));
+        Error_Handler = bfalse;
+}
+
+@ @<Unit test: Interpreter@>=
+void
+llt_Interpreter_act (llt_Fixture *fix __unused)
+{
+        /* TODO: use |Goto_Error| like the environment tests? */
+        fix->had_ex_p = bfalse;
+        if (!setjmp(Goto_Begin))
+                interpret();
+        else
+                fix->had_ex_p = btrue;
+}
+
+@ @d llt_Interpreter_test_compare(o) do {
+        boolean ok = object_compare(fix->save_##o->buf,
+                fix->save_##o->size, (o), bfalse);
+        tap_more(all, ok, fpmsgf(#o " is unchanged"));
+} while (0)
+@<Unit test: Interpreter@>=
+boolean
+llt_Interpreter_test (llt_Fixture *fix)
+{
+        char buf[TEST_BUFSIZE];
+        boolean all = btrue;
+        if (!fix->mutate_Acc_p)
+                llt_Interpreter_test_compare(Acc);
+        if (!fix->mutate_Env_p)
+                llt_Interpreter_test_compare(Env);
+        if (!fix->mutate_Fp_p)
+                tap_more(all, Fp == fix->save_Fp,
+                        fpmsgf("Fp is unchanged"));
+        else
+                tap_more(all, Fp == fix->want_Fp,
+                        fpmsgf("Fp is changed correctly"));
+        if (!fix->mutate_Ip_p)
+                tap_more(all, Ip == fix->save_Ip,
+                        fpmsgf("Ip is unchanged"));
+        else
+                tap_more(all, Ip == fix->want_Ip,
+                        fpmsgf("Ip is changed correctly"));
+        if (!fix->mutate_Prog_p)
+                llt_Interpreter_test_compare(Prog);
+        if (!fix->mutate_RTS_p)
+                llt_Interpreter_test_compare(RTS);
+        if (!fix->mutate_RTSp_p)
+                tap_more(all, RTSp == fix->save_RTSp,
+                        fpmsgf("RTSp is unchanged"));
+        else
+                tap_more(all, RTSp == fix->want_RTSp,
+                        fpmsgf("RTSp is changed correctly"));
+        if (!fix->mutate_Root_p)
+                llt_Interpreter_test_compare(Root);
+        if (!fix->mutate_VMS_p)
+                llt_Interpreter_test_compare(VMS);
+        if (fix->want_ex_p)
+                tap_more(all, fix->had_ex_p,
+                        fpmsgf("an error was raised"));
+        else
+                tap_more(all, !fix->had_ex_p,
+                        fpmsgf("an error was not raised"));
+        return all;
+}
+
+@ @<Unit test: Interpreter@>=
+llt_Fixture *
+llt_Interpreter_fix (llt_Fixture *fix,
+                     const char *name)
+{
+        fix->name = name;
+        fix->prepare = llt_Interpreter_prepare;
+        fix->destroy = llt_Interpreter_destroy;
+        fix->act = llt_Interpreter_act;
+        fix->test = llt_Interpreter_test;
+        fix->opcode = OP_NOOP;
+        fix->mutate_Ip_p = btrue;
+        fix->want_Ip = 1;
+        return fix;
+}
+
+@*2 |OP_APPLY|.
+
+...
+
+@*2 |OP_APPLY_TAIL|.
+
+...
+
+@*2 |OP_CAR|.
+
+@*2 |OP_CDR|.
+
+@*2 |OP_COMPILE|.
+
+@*2 |OP_CONS|.
+
+@*2 |OP_CYCLE|.
+
+|OP_CYCLE| swaps the top two stack elements and advances |Ip| by
+1. There must be a stack to manipulate.
+
+@<Unit test: Interpreter@>=
+void
+llt_Interpreter__OP_CYCLE_prepare (llt_Fixture *fix)
+{
+        int i;
+        for (i = 0; i < fix->extra_stack; i++)
+                rts_push(int_new(42 + 3 * i));
+        rts_push(int_new(42));
+        rts_push(sym("question?"));
+        llt_Interpreter_prepare(fix);
+}
+
+@ If all the standard tests pass then |RTSp| was unchanged and there
+are two items on the stack otherwise it's not safe to consider the
+stack at all.
+
+@<Unit test: Interpreter@>=
+boolean
+llt_Interpreter__OP_CYCLE_test (llt_Fixture *fix)
+{
+        char buf[TEST_BUFSIZE];
+        boolean ok = llt_Interpreter_test(fix);
+        cell top, next;
+        if (RTSp != fix->save_RTSp) {
+                tap_fail(fpmsgf("cannot test stack contents"));
+                tap_fail(fpmsgf("cannot test stack contents"));
+                return bfalse;
+        }
+        top = rts_pop(1);
+        next = rts_pop(1);
+        tap_more(ok, top == int_new(42),
+                fpmsgf("the stack top is correct"));
+        tap_more(ok, next == sym("question?"),
+                fpmsgf("the next stack item is correct"));
+        return ok;
+}
+
+@ @<Unit test: Interpreter@>=
+llt_Fixture *
+llt_Interpreter__OP_CYCLE (void)
+{
+        llt_Fixture *f = llt_alloc(2);
+        llt_Interpreter_fix(f + 0, __func__);
+        llt_Interpreter_fix(f + 1, __func__);
+        f[0].opcode = f[1].opcode = OP_CYCLE;
+        f[0].prepare = f[1].prepare = llt_Interpreter__OP_CYCLE_prepare;
+        f[0].test = f[1].test = llt_Interpreter__OP_CYCLE_test;
+        f[0].mutate_RTS_p = f[1].mutate_RTS_p = btrue;
+        f[0].suffix = "empty stack";
+        f[1].extra_stack = 3;
+        f[1].suffix = "stack in use";
+        return f;
+}
+
+@*2 |OP_ENVIRONMENT_P|.
+
+@*2 |OP_ENV_MUTATE_M|. 2 extra codes in Prog, Env to set in on stack.
+Value. Although |env_set| could fail this unit ``cannot'' so only
+two tests are needed for each boolean state of |new_p|.
+
+@<Unit test: Interpreter@>=
+void
+llt_Interpreter__OP_ENV_MUTATE_M_prepare (llt_Fixture *fix)
+{
+        Prog = vector_new(4, int_new(OP_HALT));
+        vector_ref(Prog, 0) = int_new(OP_ENV_MUTATE_M);
+        vector_ref(Prog, 1) = sym(LLT_TEST_VARIABLE);
+        vector_ref(Prog, 2) = fix->env_new_p;
+        Ip = 0;
+        Acc = sym(LLT_VALUE_POLO);
+        Tmp_Test = fix->backup_Env = env_empty();
+        rts_push(fix->backup_Env);
+        if (false_p(fix->env_new_p))
+                env_set(fix->backup_Env,
+                        sym(LLT_TEST_VARIABLE), sym(LLT_VALUE_FISH), FALSE);
+        llt_Interpreter_prepare(fix);
+}
+
+@ @<Unit test: Interpreter@>=
+boolean
+llt_Interpreter__OP_ENV_MUTATE_M_test (llt_Fixture *fix)
+{
+        char buf[TEST_BUFSIZE];
+        boolean ok = llt_Interpreter_test(fix);
+        cell found;
+        tap_more(ok, void_p(Acc), fpmsgf("Acc is void"));
+        found = env_here(fix->backup_Env, fix->sym_mpft[3]);
+        tap_more(ok, found == fix->sym_mpft[1], fpmsgf("the value is set"));
+        return ok;
+}
+
+@ @<Unit test: Interpreter@>=
+llt_Fixture *
+llt_Interpreter__OP_ENV_MUTATE_M (void)
+{
+        llt_Fixture *f = llt_alloc(2);
+        llt_Interpreter_fix(f + 0, __func__);
+        llt_Interpreter_fix(f + 1, __func__);
+        f[0].custom_p = f[1].custom_p = btrue;
+        f[0].prepare = f[1].prepare
+                = llt_Interpreter__OP_ENV_MUTATE_M_prepare;
+        f[0].test = f[1].test = llt_Interpreter__OP_ENV_MUTATE_M_test;
+        f[0].want_Ip = f[1].want_Ip = 3;
+        f[0].mutate_Acc_p = f[1].mutate_Acc_p = btrue;
+        f[0].mutate_RTS_p = f[1].mutate_RTS_p = btrue;
+        f[0].mutate_RTSp_p = f[1].mutate_RTSp_p = btrue;
+        f[0].want_RTSp = f[1].want_RTSp = -1;
+        f[0].suffix = "already bound";
+        f[0].env_new_p = FALSE;
+        f[1].suffix = "not bound";
+        f[1].env_new_p = TRUE;
+        return f;
+}
+
+@*2 |OP_ENV_QUOTE|.
+
+@*2 |OP_ENV_ROOT|.
+
+@*2 |OP_ENV_SET_ROOT_M|.
+
+@*2 |OP_ERROR|.
+
+@*2 |OP_HALT|.
+
+The only thing |OP_HALT| does is lower the |Running| flag to halt the VM.
+
+@<Unit test: Interpreter@>=
+llt_Fixture *
+llt_Interpreter__OP_HALT (void)
+{
+        llt_Fixture *f = llt_alloc(1);
+        llt_Interpreter_fix(f, __func__);
+        f->opcode = OP_HALT;
+        f->mutate_Ip_p = bfalse;
+        return f;
+}
+
+@*2 |OP_JUMP|. There is not much to test for |OP_JUMP|.
+
+@<Unit test: Interpreter@>=
+void
+llt_Interpreter__OP_JUMP_prepare (llt_Fixture *fix)
+{
+        Prog = vector_new(4, int_new(OP_HALT));
+        vector_ref(Prog, 0) = int_new(OP_JUMP);
+        vector_ref(Prog, 1) = int_new(3);
+        Ip = 0;
+        llt_Interpreter_prepare(fix);
+}
+
+@ @<Unit test: Interpreter@>=
+llt_Fixture *
+llt_Interpreter__OP_JUMP (void)
+{
+        llt_Fixture *f = llt_alloc(1);
+        llt_Interpreter_fix(f, __func__);
+        f->prepare = llt_Interpreter__OP_JUMP_prepare;
+        f->want_Ip = 3;
+        f->custom_p = btrue;
+        return f;
+}
+
+@*2 |OP_JUMP_FALSE|. Only |Ip| changes, unless |VOID| was being
+queried in which case |Ip| will be unchanged and an error raised.
+
+@<Unit test: Interpreter@>=
+void
+llt_Interpreter__OP_JUMP_FALSE_prepare (llt_Fixture *fix)
+{
+        Prog = vector_new(4, int_new(OP_HALT));
+        vector_ref(Prog, 0) = int_new(fix->opcode);
+        vector_ref(Prog, 1) = int_new(3);
+        Ip = 0;
+        Acc = fix->set_Acc;
+        llt_Interpreter_prepare(fix);
+}
+
+@ @<Unit test: Interpreter@>=
+boolean
+llt_Interpreter__OP_JUMP_FALSE_test (llt_Fixture *fix)
+{
+        char buf[TEST_BUFSIZE];
+        boolean ok = llt_Interpreter_test(fix);
+        if (void_p(fix->set_Acc)) {
+                tap_more(ok, exception_p(Acc)
+                                && ex_id(Acc) == Sym_ERR_UNEXPECTED
+                                && void_p(ex_detail(Acc)),
+                        fpmsgf("error is unexpected void"));
+        }
+        return ok;
+}
+
+@ @<Unit test: Interpreter@>=
+llt_Fixture *
+llt_Interpreter__OP_JUMP_FALSE (void)
+{
+        int i;
+        llt_Fixture *f = llt_alloc(4);
+        for (i = 0; i < 4; i++) {
+                llt_Interpreter_fix(f + i, __func__);
+                f[i].prepare = llt_Interpreter__OP_JUMP_FALSE_prepare;
+                f[i].test = llt_Interpreter__OP_JUMP_FALSE_test;
+                f[i].opcode = OP_JUMP_FALSE;
+                f[i].custom_p = btrue;
+        }
+        f[0].suffix = "any";
+        f[0].set_Acc = int_new(42);
+        f[0].want_Ip = 2;
+        f[1].suffix = "#t";
+        f[1].set_Acc = TRUE;
+        f[1].want_Ip = 2;
+        f[2].suffix = "#f";
+        f[2].set_Acc = FALSE;
+        f[2].want_Ip = 3;
+        f[3].suffix = "no value";
+        f[3].set_Acc = VOID;
+        f[3].want_Ip = -1;
+        f[3].want_ex_p = btrue;
+        f[3].mutate_Acc_p = btrue;
+        return f;
+}
+
+@*2 |OP_JUMP_TRUE|. This test mirrors that for |OP_JUMP_FALSE|
+except that the responses to |TRUE| and |FALSE| are inverted.
+
+@<Unit test: Interpreter@>=
+llt_Fixture *
+llt_Interpreter__OP_JUMP_TRUE (void)
+{
+        int i;
+        llt_Fixture *f = llt_Interpreter__OP_JUMP_FALSE();
+        for (i = 0; i < f->max; i++) {
+                f[i].name = __func__;
+                f[i].opcode = OP_JUMP_TRUE;
+        }
+        i = f[1].want_Ip;
+        f[1].want_Ip = f[2].want_Ip;
+        f[2].want_Ip = i;
+        return f;
+}
+
+@*2 |OP_LAMBDA|.
+
+@*2 |OP_LIST_P|.
+
+@*2 |OP_LIST_REVERSE|.
+
+@*2 |OP_LIST_REVERSE_M|.
+
+@*2 |OP_LOOKUP|. Assumes a symbol in Acc, looks for it recursively
+in Env. Value placed in Acc, or not found error.
+
+Test not found vs. found.
+
+@ @<Unit test: Interpreter@>=
+void
+llt_Interpreter__OP_LOOKUP_prepare (llt_Fixture *fix)
+{
+        vms_push(fix->backup_Env = Env);
+        Env = env_extend(Env);
+        if (fix->env_found_p)
+                env_set(Env, sym(LLT_VALUE_MARCO), sym(LLT_VALUE_POLO), btrue);
+        Acc = sym(LLT_VALUE_MARCO);
+        llt_Interpreter_prepare(fix);
+}
+
+@ @<Unit test: Interpreter@>=
+void
+llt_Interpreter__OP_LOOKUP_destroy (llt_Fixture *fix)
+{
+        Env = fix->backup_Env;
+        VMS = NIL;
+}
+
+@ @<Unit test: Interpreter@>=
+boolean
+llt_Interpreter__OP_LOOKUP_test (llt_Fixture *fix)
+{
+        char buf[TEST_BUFSIZE];
+        boolean ok = llt_Interpreter_test(fix);
+        if (fix->env_found_p)
+                tap_more(ok, Acc = fix->sym_mpft[0],
+                        fpmsgf("Acc contains the looked up value"));
+        else
+                tap_more(ok, exception_p(Acc)
+                                && ex_id(Acc) == Sym_ERR_UNBOUND
+                                && ex_detail(Acc) == fix->sym_mpft[0],
+                        fpmsgf("error is unbound marco?"));
+        return ok;
+}
+
+@ @<Unit test: Interpreter@>=
+llt_Fixture *
+llt_Interpreter__OP_LOOKUP (void)
+{
+        llt_Fixture *f = llt_alloc(2);
+        llt_Interpreter_fix(f + 0, __func__);
+        llt_Interpreter_fix(f + 1, __func__);
+        f[0].opcode = f[1].opcode = OP_LOOKUP;
+        f[0].prepare = f[1].prepare = llt_Interpreter__OP_LOOKUP_prepare;
+        f[0].test = f[1].test = llt_Interpreter__OP_LOOKUP_test;
+        f[0].destroy = f[1].destroy = llt_Interpreter__OP_LOOKUP_destroy;
+        f[0].mutate_RTS_p = f[1].mutate_RTS_p = btrue;
+        f[0].mutate_Acc_p = f[1].mutate_Acc_p = btrue;
+        f[0].suffix = "bound";
+        f[0].env_found_p = btrue;
+        f[1].suffix = "unbound";
+        f[1].want_ex_p = btrue;
+        f[1].want_Ip = -1;
+        return f;
+}
+
+@*2 |OP_NIL|.
+
+@*2 |OP_NOOP|.
+
+The |OP_NOOP| opcode has the same effect as |OP_HALT|, ie. none,
+without halting the VM.
+
+@<Unit test: Interpreter@>=
+llt_Fixture *
+llt_Interpreter__OP_NOOP (void)
+{
+        llt_Fixture *f = llt_alloc(1);
+        llt_Interpreter_fix(f, __func__);
+        return f;
+}
+
+@*2 |OP_NULL_P|.
+
+@*2 |OP_PAIR_P|.
+
+@*2 |OP_PEEK|.
+
+@*2 |OP_POP|.
+
+@*2 |OP_PUSH|.
+
+@*2 |OP_QUOTE|.
+
+@*2 |OP_RETURN|.
+
+...
+
+@*2 |OP_RUN|.
+
+...
+
+@*2 |OP_RUN_THERE|.
+
+...
+
+@*2 |OP_SET_CAR_M|.
+
+@*2 |OP_SET_CDR_M|.
+
+@*2 |OP_SNOC|. This opcode decomposes a pair in the accumulator,
+placing the |car| on the stack.
+
+@<Unit test: Interpreter@>=
+void
+llt_Interpreter__OP_SNOC_prepare (llt_Fixture *fix)
+{
+        Acc = cons(sym(LLT_VALUE_FISH), int_new(42));
+        llt_Interpreter_prepare(fix);
+}
+
+@ @<Unit test: Interpreter@>=
+boolean
+llt_Interpreter__OP_SNOC_test (llt_Fixture *fix)
+{
+        char buf[TEST_BUFSIZE];
+        boolean ok = llt_Interpreter_test(fix);
+        tap_more(ok, Acc == fix->sym_mpft[2],
+                fpmsgf("The car is in Acc"));
+        tap_more(ok, RTSp == fix->want_RTSp && rts_pop(1) == int_new(42),
+                fpmsgf("The cdr is in RTS"));
+        return ok;
+}
+
+@ @<Unit test: Interpreter@>=
+llt_Fixture *
+llt_Interpreter__OP_SNOC (void)
+{
+        llt_Fixture *f = llt_alloc(1);
+        llt_Interpreter_fix(f, __func__);
+        f[0].opcode = OP_SNOC;
+        f[0].prepare = llt_Interpreter__OP_SNOC_prepare;
+        f[0].test = llt_Interpreter__OP_SNOC_test;
+        f[0].mutate_Acc_p = btrue;
+        f[0].mutate_RTS_p = btrue;
+        f[0].mutate_RTSp_p = btrue;
+        return f;
+}
+
+@*2 |OP_SWAP|. This opcode is similar to |OP_CYCLE| except for what
+gets cycled.
+
+@<Unit test: Interpreter@>=
+void
+llt_Interpreter__OP_SWAP_prepare (llt_Fixture *fix)
+{
+        int i;
+        for (i = 0; i < fix->extra_stack; i++)
+                rts_push(int_new(42 + 3 * i));
+        rts_push(int_new(42));
+        Acc = sym("question?");
+        llt_Interpreter_prepare(fix);
+}
+
+@ @<Unit test: Interpreter@>=
+boolean
+llt_Interpreter__OP_SWAP_test (llt_Fixture *fix)
+{
+        char buf[TEST_BUFSIZE];
+        boolean ok = llt_Interpreter_test(fix);
+        if (RTSp != fix->save_RTSp)
+                tap_fail(fpmsgf("cannot test stack contents"));
+        else
+                tap_more(ok, rts_pop(1) == sym("question?"),
+                        fpmsgf("the stack top is correct"));
+        tap_more(ok, Acc == int_new(42),
+                fpmsgf("Acc is correct"));
+        return ok;
+}
+
+@ @<Unit test: Interpreter@>=
+llt_Fixture *
+llt_Interpreter__OP_SWAP (void)
+{
+        llt_Fixture *f = llt_alloc(2);
+        llt_Interpreter_fix(f + 0, __func__);
+        llt_Interpreter_fix(f + 1, __func__);
+        f[0].opcode = f[1].opcode = OP_SWAP;
+        f[0].prepare = f[1].prepare = llt_Interpreter__OP_SWAP_prepare;
+        f[0].test = f[1].test = llt_Interpreter__OP_SWAP_test;
+        f[0].mutate_Acc_p = f[1].mutate_Acc_p = btrue;
+        f[0].mutate_RTS_p = f[1].mutate_RTS_p = btrue;
+        f[0].suffix = "empty stack";
+        f[1].extra_stack = 3;
+        f[1].suffix = "stack in use";
+        return f;
+}
+
+@*2 |OP_SYNTAX|.
+
+@*2 |OP_VOV|.
+
+@*1 Compiler.
+
+The compiler generates bytecode from s-expressions, or raises a
+syntax or arity error. These tests verify that bytecode is generated
+when it should be not that the generated bytecode correctly implements
+the operator in question. This validation is performed by later
+tests of the integration between the compiler and the interpreter.
+
+Each test fixture (if the compilation is expected to succeed)
+includes a \CEE/-string representation of the bytecode it is expected
+to generate which is compared with the bytecode's written representation.
+
+@(t/compiler.c@>=
+@<Unit test header@>@;
+
+struct llt_Fixture {
+        LLT_FIXTURE_HEADER;
+        cell ret_val;
+        cell src_val;
+        char *src_exp;
+        boolean had_ex_p;
+        char *want;
+        cell want_ex;
+        cell save_Acc;
+};
+
+@<Unit test body@>@;
+
+@<Unit test: Compiler@>@;
+
+llt_fixture Test_Fixtures[] = {@|
+        llt_Compiler__Eval,
+        NULL@/
+};
+
+@ @<Unit test: Compiler@>=
+void
+llt_Compiler_prepare (llt_Fixture *fix)
+{
+        Tmp_Test = fix->src_val = read_cstring(fix->src_exp);
+        Error_Handler = btrue;
+}
+
+@ @<Unit test: Compiler@>=
+void
+llt_Compiler_destroy (llt_Fixture *fix __unused)
+{
+        Tmp_Test = NIL;
+        Error_Handler = bfalse;
+}
+
+@ @<Unit test: Compiler@>=
+void
+llt_Compiler_act (llt_Fixture *fix)
+{
+        fix->save_Acc = Acc;
+        fix->had_ex_p = bfalse;
+        if (!setjmp(Goto_Error))
+                fix->ret_val = compile(fix->src_val);
+        else
+                fix->had_ex_p = btrue;
+}
+
+@ @<Unit test: Compiler@>=
+char * llt_Compiler_decompile (cell);
+boolean
+llt_Compiler_compare_bytecode (cell bc,
+                               char *want,
+                               boolean prepared_p)
+{
+        char *g, *w;
+        ssize_t len;
+        int i;
+        boolean r = btrue;
+        if (!vector_p(bc))
+                return bfalse;
+        ERR_OOM_P(g = calloc(TEST_BUFSIZE, sizeof (char)));
+        if (write_bytecode(bc, g, TEST_BUFSIZE, 0) < 0) {
+                free(g);
+                return bfalse;
+        }
+        len = (ssize_t) strlen(want);
+        if (prepared_p)
+                w = want;
+        else {
+                ERR_OOM_P(w = malloc(len + 1));
+                w[0] = '{';
+                for (i = 1; i < len - 1; i++)
+                        w[i] = want[i];
+                w[i] = '}';
+        }
+        if (len != (ssize_t) strlen(g))
+                r = bfalse;
+        else
+                for (i = 0; i < len; i++)
+                        if (g[i] != w[i]) {
+                                r = bfalse;
+                                break;
+                        }
+        free(g);
+        if (!prepared_p)
+                free(w);
+        return r;
+}
+
+@ @<Unit test: Compiler@>=
+boolean
+llt_Compiler_test (llt_Fixture *fix)
+{
+        char buf[TEST_BUFSIZE] = {0};
+        boolean ok, match;
+        if (fix->want == NULL) {
+                ok = tap_ok(fix->had_ex_p, fpmsgf("an error was raised"));
+                tap_more(ok, ex_id(Acc) == fix->want_ex,
+                        fpmsgf("the error type is correct"));
+        } else {
+                ok = tap_ok(!fix->had_ex_p,
+                        fpmsgf("an error was not raised"));
+                tap_more(ok, null_p(CTS),
+                        fpmsgf("the compiler stack is clear"));
+                tap_more(ok, Acc == fix->save_Acc,
+                        fpmsgf("Acc is unchanged"));
+                match = llt_Compiler_compare_bytecode(fix->ret_val,
+                        fix->want, bfalse);
+                tap_more(ok, match,
+                        fpmsgf("the correct bytecode is generated"));
+        }
+        return ok;
+}
+
+@ @<Unit test: Compiler@>=
+llt_Fixture *
+llt_Compiler_fix (llt_Fixture *fix,
+                  const char *name)
+{
+        fix->name = name;
+        fix->prepare = llt_Compiler_prepare;
+        fix->destroy = llt_Compiler_destroy;
+        fix->act = llt_Compiler_act;
+        fix->test = llt_Compiler_test;
+        fix->want = NULL;
+        fix->want_ex = NIL;
+        return fix;
+}
+
+@*2 |compile_eval|.
+
+\point 1. {\it What is the contract fulfilled by the code under test?}
+
+A list who's first expression is the symbol |eval| is passed as an
+argument to |compile|, which will pass control to |compile_eval|.
+An error is raised if other than one or two more expressions is in
+the list, otherwise it's compiled and the bytecode returned. |compile|
+takes no action to preserve its argument from the garbage collector.
+The argument values are not validated at this compile-time.
+
+\point 2. {\it What preconditions are required, and how are they
+enforced?}
+
+A \CEE/-string representing the expression to be compiled is read
+in. The majority if the VM state is ignored.
+
+\point 3. {\it What postconditions are guaranteed?}
+
+The tests that expect an error to be raised will see that error in
+|Acc| and |compile| will not return. |CTS| may be changed but it
+can be ignored.
+
+When compilation was a success the compilation result will be
+returned and |CTS| will be empty.
+
+\point 4. {\it What example inputs trigger different behaviors?}
+
+The number of arguments to |eval| and their form (specifically,
+what each compiles to).
+
+\point 5. {\it What set of tests will trigger each behavior and
+validate each guarantee?}
+
+Four tests of 0, 1, 2 and 3 constant-value arguments validate that
+the VM is unchanged when compilation is a success or otherwise
+changed correctly.
+
+The one-expression case is repeated three times with different types
+of expression to validate that the evaluating expression compiles.
+
+These tests are duplicated again for the two-expression case; each
+test three times with the same types of different expression in the
+second position for a total of 9 two-expression tests.
+
+TODO: explain these macros.
+
+@d CAT2(a,b) a@=/**/@>b
+@d CAT3(a,b,c) a@=/**/@>b@=/**/@>c
+@d CAT4(a,b,c,d) a@=/**/@>b@=/**/@>c@=/**/@>d
+@d LLTCC_EVAL_FIRST_COMPLEX(xc,xa) CAT3(CAT3(" OP_QUOTE (", xa, ") OP_PUSH"),
+        CAT3(" OP_QUOTE ", xc, " OP_LOOKUP"),
+        " OP_CONS OP_COMPILE OP_RUN")
+@d LLTCC_EVAL_FIRST_LOOKUP(x) CAT3(" OP_QUOTE ", x, " OP_LOOKUP")
+@d LLTCC_EVAL_FIRST_QUOTE(x) CAT2(" OP_QUOTE ", x)
+@d LLTCC_EVAL_SECOND_COMPLEX(xc,xa) CAT2(LLTCC_EVAL_FIRST_COMPLEX(xc,xa), " OP_PUSH")
+@d LLTCC_EVAL_SECOND_LOOKUP(x) CAT2(LLTCC_EVAL_FIRST_LOOKUP(x), " OP_PUSH")
+@d LLTCC_EVAL_SECOND_QUOTE(x) CAT2(LLTCC_EVAL_FIRST_QUOTE(x), " OP_PUSH")
+@d LLTCC_EVAL_VALIDATE(x) CAT3(" OP_ENVIRONMENT_P OP_JUMP_TRUE ", x,
+        " OP_QUOTE unexpected OP_ERROR")
+@d LLTCC_EVAL_ONEARG() " OP_COMPILE OP_RUN OP_RETURN "
+@d LLTCC_EVAL_TWOARG() " OP_COMPILE OP_RUN_THERE OP_RETURN "
+@<Unit test: Compiler@>=
+void
+llt_Compiler__Eval_prepare (llt_Fixture *fix)
+{
+        llt_Compiler_prepare(fix);
+        car(fix->src_val) = env_search(Root, sym("eval"));
+}
+
+@ @<Unit test: Compiler@>=
+llt_Fixture *
+llt_Compiler__Eval (void)
+{
+        int i;
+        llt_Fixture *f = llt_alloc(16);
+        for (i = 0; i < 16; i++) {
+                llt_Compiler_fix(f + i, __func__);
+                f[i].prepare = llt_Compiler__Eval_prepare;
+        }
+        i = -1;
+        @<Unit test part: compiler/|eval| fixtures@>@;
+        return f;
+}
+
+@ Constant-value arguments validate arity validation.
+
+@<Unit test part: compiler/|eval| fixtures@>=
+f[++i].src_exp = "(eval)";
+f[  i].suffix = "eval";
+f[  i].want_ex = Sym_ERR_ARITY_SYNTAX;
+f[++i].src_exp = "(eval 42)";
+f[  i].suffix = "eval x";
+f[  i].want = CAT2(LLTCC_EVAL_FIRST_QUOTE("42"), LLTCC_EVAL_ONEARG());
+f[++i].src_exp = "(eval 4 2)";
+f[  i].suffix = "eval x x";
+f[  i].want = CAT4(LLTCC_EVAL_SECOND_QUOTE("2"), LLTCC_EVAL_VALIDATE("9"),
+        LLTCC_EVAL_FIRST_QUOTE("4"), LLTCC_EVAL_TWOARG());
+f[++i].src_exp = "(eval 4 2 ?)";
+f[  i].suffix = "eval x x x";
+f[  i].want_ex = Sym_ERR_ARITY_SYNTAX;
+
+@ Validating that a single expression is compiled.
+
+@<Unit test part: compiler/|eval| fixtures@>=
+f[++i].src_exp = "(eval 42)";
+f[  i].suffix = "eval <constant>";
+f[  i].want = CAT2(LLTCC_EVAL_FIRST_QUOTE("42"), LLTCC_EVAL_ONEARG());
+f[++i].src_exp = "(eval marco?)";
+f[  i].suffix = "eval <symbol>";
+f[  i].want = CAT2(LLTCC_EVAL_FIRST_LOOKUP("marco?"), LLTCC_EVAL_ONEARG());
+f[++i].src_exp = "(eval (build an expression))";
+f[  i].suffix = "eval <complex expression>";
+f[  i].want = CAT2(LLTCC_EVAL_FIRST_COMPLEX("build", "an expression"),
+        LLTCC_EVAL_ONEARG());
+
+@ Two expressions where the first is constant.
+
+@<Unit test part: compiler/|eval| fixtures@>=
+f[++i].src_exp = "(eval 42 24)";
+f[  i].suffix = "eval <constant> <constant>";
+f[  i].want = CAT4(LLTCC_EVAL_SECOND_QUOTE("24"), LLTCC_EVAL_VALIDATE("9"),
+        LLTCC_EVAL_FIRST_QUOTE("42"), LLTCC_EVAL_TWOARG());
+f[++i].src_exp = "(eval 42 marco?)";
+f[  i].suffix = "eval <constant> <symbol>";
+f[  i].want = CAT4(LLTCC_EVAL_SECOND_LOOKUP("marco?"), LLTCC_EVAL_VALIDATE("10"),
+        LLTCC_EVAL_FIRST_QUOTE("42"), LLTCC_EVAL_TWOARG());
+f[++i].src_exp = "(eval 42 (get an environment))";
+f[  i].suffix = "eval <constant> <complex expression>";
+f[  i].want = CAT4(LLTCC_EVAL_SECOND_COMPLEX("get", "an environment"),
+        LLTCC_EVAL_VALIDATE("16"),
+        LLTCC_EVAL_FIRST_QUOTE("42"), LLTCC_EVAL_TWOARG());
+
+@ Two expressions where the first is a symbol.
+
+@<Unit test part: compiler/|eval| fixtures@>=
+f[++i].src_exp = "(eval marco? 24)";
+f[  i].suffix = "eval <symbol> <constant>";
+f[  i].want = CAT4(LLTCC_EVAL_SECOND_QUOTE("24"), LLTCC_EVAL_VALIDATE("9"),
+        LLTCC_EVAL_FIRST_LOOKUP("marco?"), LLTCC_EVAL_TWOARG());
+f[++i].src_exp = "(eval marco? polo!)";
+f[  i].suffix = "eval <symbol> <symbol>";
+f[  i].want = CAT4(LLTCC_EVAL_SECOND_LOOKUP("polo!"), LLTCC_EVAL_VALIDATE("10"),
+        LLTCC_EVAL_FIRST_LOOKUP("marco?"), LLTCC_EVAL_TWOARG());
+f[++i].src_exp = "(eval marco? (a new environment))";
+f[  i].suffix = "eval <symbol> <complex expression>";
+f[  i].want = CAT4(LLTCC_EVAL_SECOND_COMPLEX("a", "new environment"),
+        LLTCC_EVAL_VALIDATE("16"),
+        LLTCC_EVAL_FIRST_LOOKUP("marco?"), LLTCC_EVAL_TWOARG());
+
+@ Two expressions where the first is a complex expression.
+
+@<Unit test part: compiler/|eval| fixtures@>=
+f[++i].src_exp = "(eval (get an expression) 24)";
+f[  i].suffix = "eval <complex expression> <constant>";
+f[  i].want = CAT4(LLTCC_EVAL_SECOND_QUOTE("24"), LLTCC_EVAL_VALIDATE("9"),
+        LLTCC_EVAL_FIRST_COMPLEX("get", "an expression"),
+        LLTCC_EVAL_TWOARG());
+f[++i].src_exp = "(eval (get another expression) marco?)";
+f[  i].suffix = "eval <complex expression> <symbol>";
+f[  i].want = CAT4(LLTCC_EVAL_SECOND_LOOKUP("marco?"), LLTCC_EVAL_VALIDATE("10"),
+        LLTCC_EVAL_FIRST_COMPLEX("get", "another expression"),
+        LLTCC_EVAL_TWOARG());
+f[++i].src_exp = "(eval (once more) (this time with feeling))";
+f[  i].suffix = "eval <complex expression> <complex expression>";
+f[  i].want = CAT4(LLTCC_EVAL_SECOND_COMPLEX("this", "time with feeling"),
+        LLTCC_EVAL_VALIDATE("16"),
+        LLTCC_EVAL_FIRST_COMPLEX("once", "more"),
+        LLTCC_EVAL_TWOARG());
+
+@*1 I/O.
 
 @* Pair Integration. With the basic building blocks' interactions
 tested we arrive at the critical integration between the compiler
@@ -8150,6 +9371,7 @@ int
 main (int    argc,
       char **argv __unused)
 {
+        char wbuf[BUFFER_SEGMENT] = {0};
         vm_init();
         if (argc > 1) {
                 printf("usage: %s", argv[0]);
@@ -8164,8 +9386,8 @@ main (int    argc,
                         break;
                 interpret();
                 if (!void_p(Acc)) {
-                        write_form(Acc, 0);
-                        printf("\n");
+                        write_form(Acc, wbuf, BUFFER_SEGMENT, 0);
+                        printf("%s\n", wbuf);
                 }
         }
         if (Interrupt)
@@ -8220,5 +9442,25 @@ assoc_value (cell alist,
 
 @ @d synquote_new(o) atom(Sym_SYNTAX_QUOTE, (o), FORMAT_SYNTAX)
 @c /**/
+
+@ @<List of opcode primitives@>=
+{ "symbol?", compile_symbol_p },
+
+@ @c
+void
+compile_symbol_p (cell op,
+                cell args,
+                boolean tail_p __unused)
+{
+        arity(op, args, 1, 0);
+        compile_expression(cts_pop(), 0);
+        emitop(OP_SYMBOL_P);
+}
+
+@ @<Opcode imp...@>=
+case OP_SYMBOL_P:@/
+        Acc = symbol_p(Acc) ? TRUE : FALSE;
+        skip(1);
+        break;
 
 @** Index.
