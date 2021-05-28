@@ -27,6 +27,7 @@
 
 @s cell int
 @s error return
+@s ssize_t size_t
 
 % And now for your unusual programming...
 
@@ -1855,6 +1856,8 @@ interpret (void)
 #ifdef LL_TEST
                         @<Testing implementations@>@;
 #endif
+                default:
+                        Interrupt = btrue;
                 }
         }
         if (Interrupt)
@@ -2666,6 +2669,8 @@ write_bytecode (cell sexp,
                 if (op)
                         append(buf, rem, " ", len);
                 ins = int_value(vector_ref(sexp, op));
+                if (ins >= OPCODE_MAX)
+                        error(ERR_UNEXPECTED, NIL);
                 append(buf, rem, OP[ins].name, len);
                 for (arg = 1; arg <= OP[ins].nargs; arg++) {
                         append(buf, rem, " ", len);
@@ -2679,7 +2684,8 @@ write_bytecode (cell sexp,
 
 
 @ |write_form| simply calls each writer in turn, stopping after the
-first one returning (\CEE/'s) true.
+first one returning a positive number of bytes written or a negative
+number indicating that the buffer is full.
 
 @c
 ssize_t
@@ -2738,44 +2744,44 @@ respectively.
 
 @d skip(d) Ip += (d)
 @d fetch(d) vector_ref(Prog, Ip + (d))
-@<Complex...@>=
-enum {
+@<Complex...@>= /* Four per line */
+enum {@|
         OP_APPLY,
         OP_APPLY_TAIL,
         OP_CAR,
-        OP_CDR,
+        OP_CDR,@|
         OP_COMPILE,
         OP_CONS,
         OP_CYCLE,
-        OP_ENVIRONMENT_P,
+        OP_ENVIRONMENT_P,@|
         OP_ENV_MUTATE_M,
         OP_ENV_QUOTE,
         OP_ENV_ROOT,
-        OP_ENV_SET_ROOT_M,
+        OP_ENV_SET_ROOT_M,@|
         OP_ERROR,
         OP_HALT,
         OP_JUMP,
-        OP_JUMP_FALSE,
+        OP_JUMP_FALSE,@|
         OP_JUMP_TRUE,
         OP_LAMBDA,
         OP_LIST_P,
-        OP_LIST_REVERSE,
+        OP_LIST_REVERSE,@|
         OP_LIST_REVERSE_M,
         OP_LOOKUP,
         OP_NIL,
-        OP_NOOP,
+        OP_NOOP,@|
         OP_NULL_P,
         OP_PAIR_P,
         OP_PEEK,
-        OP_POP,
+        OP_POP,@|
         OP_PUSH,
         OP_QUOTE,
         OP_RETURN,
-        OP_RUN,
+        OP_RUN,@|
         OP_RUN_THERE,
         OP_SET_CAR_M,
         OP_SET_CDR_M,
-        OP_SNOC,
+        OP_SNOC,@|
         OP_SWAP,
         OP_SYMBOL_P,
         OP_SYNTAX,
@@ -2786,13 +2792,15 @@ enum {
         OPCODE_MAX
 };
 
-@ @<Complex...@>=
+@ In case testing opcodes are referred to outside the tests they
+are given numbers which will cause the interpreter to immediately
+abort. They are not printable.
+
+@<Complex...@>=
 #ifndef LL_TEST
-enum {
-/* Ensure testing opcodes translate into undefined behaviour */
-        OP_TEST_UNDEFINED_BEHAVIOUR = 0xf00f,
-        @<Testing opcode names@>@;
-        OPTEST_MAX
+enum {@+
+        OP_TEST_UNDEFINED_BEHAVIOUR = 0xf00f,@,
+        @<Testing opcode names@>@+
 };
 #endif
 
@@ -2806,53 +2814,51 @@ typedef struct {
 extern opcode OP[OPCODE_MAX];
 
 @ @<Global var...@>=
-opcode OP[OPCODE_MAX] = {
-        [OP_APPLY]          = { .name = "OP_APPLY",          .nargs = 1 },
-        [OP_APPLY_TAIL]     = { .name = "OP_APPLY_TAIL",     .nargs = 1 },
-        [OP_CAR]            = { .name = "OP_CAR",            .nargs = 0 },
-        [OP_CDR]            = { .name = "OP_CDR",            .nargs = 0 },
-        [OP_COMPILE]        = { .name = "OP_COMPILE",        .nargs = 0 },
-        [OP_CONS]           = { .name = "OP_CONS",           .nargs = 0 },
-        [OP_CYCLE]          = { .name = "OP_CYCLE",          .nargs = 0 },
-        [OP_ENVIRONMENT_P]  = { .name = "OP_ENVIRONMENT_P",  .nargs = 0 },
-        [OP_ENV_MUTATE_M]   = { .name = "OP_ENV_MUTATE_M",   .nargs = 2 },
-        [OP_ENV_QUOTE]      = { .name = "OP_ENV_QUOTE",      .nargs = 0 },
-        [OP_ENV_ROOT]       = { .name = "OP_ENV_ROOT",       .nargs = 0 },
-        [OP_ENV_SET_ROOT_M] = { .name = "OP_ENV_SET_ROOT_M", .nargs = 0 },
-        [OP_ERROR]          = { .name = "OP_ERROR",          .nargs = 0 },
-        [OP_HALT]           = { .name = "OP_HALT",           .nargs = 0 },
-        [OP_JUMP]           = { .name = "OP_JUMP",           .nargs = 1 },
-        [OP_JUMP_FALSE]     = { .name = "OP_JUMP_FALSE",     .nargs = 1 },
-        [OP_JUMP_TRUE]      = { .name = "OP_JUMP_TRUE",      .nargs = 1 },
-        [OP_LAMBDA]         = { .name = "OP_LAMBDA",         .nargs = 1 },
-        [OP_LIST_P]         = { .name = "OP_LIST_P",         .nargs = 2 },
-        [OP_LIST_REVERSE]   = { .name = "OP_LIST_REVERSE",   .nargs = 2 },
-        [OP_LIST_REVERSE_M] = { .name = "OP_LIST_REVERSE_M", .nargs = 0 },
-        [OP_LOOKUP]         = { .name = "OP_LOOKUP",         .nargs = 0 },
-        [OP_NIL]            = { .name = "OP_NIL",            .nargs = 0 },
-        [OP_NOOP]           = { .name = "OP_NOOP",           .nargs = 0 },
-        [OP_NULL_P]         = { .name = "OP_NULL_P",         .nargs = 0 },
-        [OP_PAIR_P]         = { .name = "OP_PAIR_P",         .nargs = 0 },
-        [OP_PEEK]           = { .name = "OP_PEEK",           .nargs = 0 },
-        [OP_POP]            = { .name = "OP_POP",            .nargs = 0 },
-        [OP_PUSH]           = { .name = "OP_PUSH",           .nargs = 0 },
-        [OP_QUOTE]          = { .name = "OP_QUOTE",          .nargs = 1 },
-        [OP_RETURN]         = { .name = "OP_RETURN",         .nargs = 0 },
-        [OP_RUN]            = { .name = "OP_RUN",            .nargs = 0 },
-        [OP_RUN_THERE]      = { .name = "OP_RUN_THERE",      .nargs = 0 },
-        [OP_SET_CAR_M]      = { .name = "OP_SET_CAR_M",      .nargs = 0 },
-        [OP_SET_CDR_M]      = { .name = "OP_SET_CDR_M",      .nargs = 0 },
-        [OP_SNOC]           = { .name = "OP_SNOC",           .nargs = 0 },
-        [OP_SWAP]           = { .name = "OP_SWAP",           .nargs = 0 },
-        [OP_SYMBOL_P]       = { .name = "OP_SYMBOL_P",       .nargs = 0 },
-        [OP_SYNTAX]         = { .name = "OP_SYNTAX",         .nargs = 1 },
-        [OP_VOV]            = { .name = "OP_VOV",            .nargs = 1 },
+opcode OP[OPCODE_MAX] = {@|
+        [OP_APPLY]          = { .name = "OP_APPLY",          .nargs = 1 },@|
+        [OP_APPLY_TAIL]     = { .name = "OP_APPLY_TAIL",     .nargs = 1 },@|
+        [OP_CAR]            = { .name = "OP_CAR",            .nargs = 0 },@|
+        [OP_CDR]            = { .name = "OP_CDR",            .nargs = 0 },@|
+        [OP_COMPILE]        = { .name = "OP_COMPILE",        .nargs = 0 },@|
+        [OP_CONS]           = { .name = "OP_CONS",           .nargs = 0 },@|
+        [OP_CYCLE]          = { .name = "OP_CYCLE",          .nargs = 0 },@|
+        [OP_ENVIRONMENT_P]  = { .name = "OP_ENVIRONMENT_P",  .nargs = 0 },@|
+        [OP_ENV_MUTATE_M]   = { .name = "OP_ENV_MUTATE_M",   .nargs = 2 },@|
+        [OP_ENV_QUOTE]      = { .name = "OP_ENV_QUOTE",      .nargs = 0 },@|
+        [OP_ENV_ROOT]       = { .name = "OP_ENV_ROOT",       .nargs = 0 },@|
+        [OP_ENV_SET_ROOT_M] = { .name = "OP_ENV_SET_ROOT_M", .nargs = 0 },@|
+        [OP_ERROR]          = { .name = "OP_ERROR",          .nargs = 0 },@|
+        [OP_HALT]           = { .name = "OP_HALT",           .nargs = 0 },@|
+        [OP_JUMP]           = { .name = "OP_JUMP",           .nargs = 1 },@|
+        [OP_JUMP_FALSE]     = { .name = "OP_JUMP_FALSE",     .nargs = 1 },@|
+        [OP_JUMP_TRUE]      = { .name = "OP_JUMP_TRUE",      .nargs = 1 },@|
+        [OP_LAMBDA]         = { .name = "OP_LAMBDA",         .nargs = 1 },@|
+        [OP_LIST_P]         = { .name = "OP_LIST_P",         .nargs = 2 },@|
+        [OP_LIST_REVERSE]   = { .name = "OP_LIST_REVERSE",   .nargs = 2 },@|
+        [OP_LIST_REVERSE_M] = { .name = "OP_LIST_REVERSE_M", .nargs = 0 },@|
+        [OP_LOOKUP]         = { .name = "OP_LOOKUP",         .nargs = 0 },@|
+        [OP_NIL]            = { .name = "OP_NIL",            .nargs = 0 },@|
+        [OP_NOOP]           = { .name = "OP_NOOP",           .nargs = 0 },@|
+        [OP_NULL_P]         = { .name = "OP_NULL_P",         .nargs = 0 },@|
+        [OP_PAIR_P]         = { .name = "OP_PAIR_P",         .nargs = 0 },@|
+        [OP_PEEK]           = { .name = "OP_PEEK",           .nargs = 0 },@|
+        [OP_POP]            = { .name = "OP_POP",            .nargs = 0 },@|
+        [OP_PUSH]           = { .name = "OP_PUSH",           .nargs = 0 },@|
+        [OP_QUOTE]          = { .name = "OP_QUOTE",          .nargs = 1 },@|
+        [OP_RETURN]         = { .name = "OP_RETURN",         .nargs = 0 },@|
+        [OP_RUN]            = { .name = "OP_RUN",            .nargs = 0 },@|
+        [OP_RUN_THERE]      = { .name = "OP_RUN_THERE",      .nargs = 0 },@|
+        [OP_SET_CAR_M]      = { .name = "OP_SET_CAR_M",      .nargs = 0 },@|
+        [OP_SET_CDR_M]      = { .name = "OP_SET_CDR_M",      .nargs = 0 },@|
+        [OP_SNOC]           = { .name = "OP_SNOC",           .nargs = 0 },@|
+        [OP_SWAP]           = { .name = "OP_SWAP",           .nargs = 0 },@|
+        [OP_SYMBOL_P]       = { .name = "OP_SYMBOL_P",       .nargs = 0 },@|
+        [OP_SYNTAX]         = { .name = "OP_SYNTAX",         .nargs = 1 },@|
+        [OP_VOV]            = { .name = "OP_VOV",            .nargs = 1 },@|
 #ifdef LL_TEST
         @<Testing opcodes@>@;
 #endif
 };
-
-/* TODO: also test opcodes */
 
 @* Basic Flow Control. The most basic opcodes that the virtual machine
 needs are those which control whether to operate and where.
@@ -3154,6 +3160,7 @@ cell arity (cell, cell, int, boolean);
 cell arity_next (cell, cell, cell, boolean, boolean);
 int comefrom (void);
 cell compile (cell);
+cell compile_main (void);
 void compile_car (cell, cell, boolean);
 void compile_cdr (cell, cell, boolean);
 void compile_conditional (cell, cell, boolean);
@@ -3166,7 +3173,6 @@ void compile_eval (cell, cell, boolean);
 void compile_expression (cell, boolean);
 void compile_lambda (cell, cell, boolean);
 void compile_list (cell, cell, boolean);
-cell compile_main (void);
 void compile_null_p (cell, cell, boolean);
 void compile_pair_p (cell, cell, boolean);
 void compile_quasicompiler (cell, cell, cell, int, boolean);
