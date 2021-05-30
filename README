@@ -1,12 +1,72 @@
-LossLess is written in C using the Literate Programming technique
-developed (initially) by Donald E. Knuth. It's my first literate project
-so don't expect a lot.
+LossLess is my pet programming language with grand plans. At its core
+it's based primarily on Scheme with ideas from Kernel. More information
+can be found at http://zeus.jtan.com/~chohag/lossless/ .
 
-Literate source code intersperces prose with source code and must be
-processed by CTANGLE, part of CWEB, to produce compilable C source. Get
-it from https://www-cs-faculty.stanford.edu/~knuth/cweb.html or your
-distribution's packages/ports repository. For Debian try
-texlive-binaries. OpenBSD includes it in texlive_base.
+LossLess' primary aims is to be approachable leaving no mystery. To this
+end its core---which is all that currently exists---is written in using
+the Literate Programming technique invented by Donald E. Knuth. In
+addition to an executable literate programming produces a document
+describing the implementation details of the program.
 
-nb. TeX is *not* required to compile CWEB nor is it required to compile
-the LossLess binary.
+The plan is that LossLess' online documentation will include appropriate
+links to the sections of this program that describe the component's
+precise implementation.
+
+Building LossLess
+-----------------
+
+LossLess should build with any C compiler you can throw it at. For the
+time being there is a dependency on the standard library which I plan to
+reduce to the test suite only.
+
+There is no distributable LossLess yet, only a git source repository, so
+the build process requires CWEB to be installed, which is usually part
+of TeXlive (texlive_base on OpenBSD, texlive-binaries on Debian). This
+package is ironically huge given the constraints that TeX was invented
+under.
+
+With that installed LossLess can be built with:
+
+    make
+
+The test suite depends on Perl's prove(1) test harness which is almost
+guaranteed to be installed already:
+
+    make test
+
+There is no installer.
+
+Building LossLess without TeX or CWEB
+-------------------------------------
+
+CWEB produces either a PDF or DVI file, or C source code. A package
+containing these is available at:
+
+        http://zeus.jtan.com/~chohag/lossless/lossless-0.tgz
+
+Building from these intermediate sources requires only a C compiler but
+it won't be possible (or rather, it won't be easy) to make changes to
+LossLess' source.
+
+Before using make on these intermediate source files first ensure that
+make considers them more up-to-date than the CWEB source:
+
+    touch *.pdf *.[ch] t/*.[ch]
+
+Then proceed as normal:
+
+    make
+
+and
+
+    make test
+
+There is still no installer.
+
+Additional Commentary
+---------------------
+
+I have begun to document my experience developing LossLess at
+http://zeus.jtan.com/~chohag/blogless/
+
+http://chohag.github.io/ is occasionally updated.

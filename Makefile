@@ -87,8 +87,17 @@ t:
 		$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) -I. lltest.o -o $@ $<;  \
 	fi
 
+dist: lossless.pdf $(SOURCES) $(OTHER_SOURCES) $(TEST_SOURCES)
+	d=$$(date +%s);                                              \
+	mkdir -p tmp/lossless-0.$$d/t;                               \
+	cp README* Makefile lossless.pdf *.[chw] tmp/lossless-0.$$d; \
+	cp t/*.[ch] tmp/lossless-0.$$d/t;                            \
+	rm -f tmp/lossless-0.$$d/*~ tmp/lossless-0.$$d/t/*~;         \
+	tar -C tmp -cf- lossless-0.$$d | gzip -9c > lossless-0.$$d.tgz
+
 clean:
 	rm -f core *.core *.idx *.log *.scn *.toc *.o
 	rm -f lossless *.o
 	rm -f repl.c lossless.c lossless.tex lossless.pdf
+	rm -f lossless*tgz
 	rm -fr t
