@@ -2623,7 +2623,7 @@ write_list(cell sexp,
         }
         if (!null_p(sexp))
                 append_write(buf, rem, sexp, depth + 1, len);
-        append (buf, rem, ")", len);
+        append(buf, rem, ")", len);
         return len;
 }
 
@@ -4352,266 +4352,164 @@ extern cell Tmp_Test;
         Tmp_Test = NIL;
 #endif
 
-@ Some tests need to examine a snapshot of the interpreter's run-time
-state which they do by calling {\it test!probe}.
+@* Utilities: dynamic memory. Unit tests allocate memory with the
+|malloc(1)| family of allocators from \CEE/'s standard library to
+avoid clashing with the \LL/ heap which is under test. This is a
+simple memory manager which is designed solely for buffers which
+can grow but are never likely to be deallocated.
 
-@d object_copy(o,d,p) object_copy_imp((o),(d),(p),0)
-@d object_copyref(o,d) object_copyref_imp((o),(d),0)
-@<Function dec...@>=
-void compile_testing_probe (cell, cell, boolean);
-void compile_testing_probe_app (cell, cell, boolean);
-boolean object_compare (char *, size_t, cell, boolean);
-int object_copy_imp (cell, char *, boolean, int);
-int object_copyref_imp (cell, cell *, int);
-size_t object_sizeof (cell);
-size_t object_sizeofref (cell);
-cell testing_build_probe (cell);
+The data pointer is a |char *| rather than the more appropriate
+|void *| because these buffers are mostly used to store \CEE/-strings.
+Other uses of this structure would need to cast the pointer anyway.
 
-@ @<Testing opcode names@>=
-OP_TEST_PROBE,
+Because this allocator will be used exclusively by the test code
+to allocate small buffers, primarily for small pieces of text, no
+especial care is taken to guard against any errors beyond memory
+exhaustion.
 
-@ @<Testing opcodes@>=
-[OP_TEST_PROBE] = { .name = "OP_VOV", .nargs = 1 },
+@<Type def...@>=
+typedef struct {
+        size_t len;
+        size_t size;
+        char data[];
+} llt_buffer;
 
-@ @<Testing imp...@>=
-case OP_TEST_PROBE:@/
-        Acc = testing_build_probe(rts_pop(1));
-        skip(1);
-        break;
+@ @<Func...@>=
+llt_buffer *llt_alloc_imp (size_t, size_t);
+llt_buffer *llt_grow_imp (llt_buffer *, size_t);
 
-@ @<Testing primitives@>=
-{ "test!probe", compile_testing_probe },@/
-{ "test!probe-applying", compile_testing_probe_app },
-
-@ @c
-void
-compile_testing_probe (cell op __unused,
-                       cell args,
-                       boolean tail_p __unused)
-{
-        emitop(OP_PUSH);
-        emitq(args);
-        emitop(OP_TEST_PROBE);
-}
-
-@ This variant evaluates its run-time arguments first.
+@ @d llt_alloc(l,t) llt_alloc_imp((l), sizeof (t))
 @c
-void
-compile_testing_probe_app (cell op __unused,
-                           cell args,
-                           boolean tail_p __unused)
+llt_buffer *
+llt_alloc_imp (size_t len,
+               size_t size)
 {
-        emitop(OP_PUSH);
-        cts_push(args = list_reverse(args, NULL, NULL));
-        emitq(NIL);
-        for (; pair_p(args); args = cdr(args)) {
-                emitop(OP_PUSH);
-                compile_expression(car(args), bfalse);
-                emitop(OP_CONS);
-        }
-        cts_pop();
-        emitop(OP_TEST_PROBE);
+        llt_buffer *r;
+        size_t total;
+        total = (len * size) + sizeof (llt_buffer);
+        ERR_OOM_P(r = calloc(total, 1));
+        r->len = len;
+        r->size = size;
+        return r;
 }
 
-@ {\bf TODO:} This should make a deep copy of the objects not merely
-reference them.
-
+@ @d llt_grow(o,l) ((o) = llt_grow_imp((o), (l)))
+@d llt_grow_by(o,d) ((o) = llt_grow_imp((o), (o)->len + (d)))
 @c
-size_t
-object_sizeof (cell o)
+llt_buffer *
+llt_grow_imp (llt_buffer *old,
+              size_t len)
 {
-        size_t s;
-        int i;
-        if (special_p(o))
-                return sizeof (char);
-        s = sizeof (char) + 2 * sizeof (cell);
-        if (acar_p(o))
-                s += object_sizeof(car(o));
-        if (acdr_p(o))
-                s += object_sizeof(cdr(o));
-        if (vector_p(o)) {
-                s += (vector_length(o) + VECTOR_HEAD) * sizeof (cell);
-                for (i = 0; i < vector_length(o); i++)
-                        s += object_sizeof(vector_ref(o, i));
-        }
-        return s;
+        llt_buffer *new;
+        size_t ntotal, ototal;
+        ototal = (old->len * old->size) + sizeof (llt_buffer);
+        ntotal = (len * old->size) + sizeof (llt_buffer);
+        ERR_OOM_P(new = realloc(old, ntotal));
+        new->len = len;
+        return new;
 }
 
-@ @c
-int
-object_copy_imp (cell o,
-                 char *dst,
-                 boolean offset_p,
-                 int p)
+@* Utilities: Serialisation. Some tests need to see if an object
+in memory has changed at all and often in ways which could not be
+detected with high-level comparisons so these functions serialise
+and compare the full internal representation of an object. The
+offset of a |vector| in its pool can change legitimately so this
+is not included in the serialisation except when vector garbage
+collection is under test.
+
+@ @<Func...@>=
+llt_buffer *llt_serialise (cell, boolean);
+boolean llt_compare_serial (llt_buffer *, cell, boolean);
+llt_buffer * llt_copy_refs (cell);
+
+@ @d llt_extend_serial(buf, by, off) do {
+        llt_buffer *q = (by);
+        llt_grow_by((buf), q->len);
+        bcopy(q->data, (buf)->data + ((off) * q->size), q->len * q->size);
+        (off) += q->len;
+        free(q);
+} while (0)
+@c
+llt_buffer *
+llt_serialise (cell obj,
+               boolean offset_p)
 {
         int i;
-        if (special_p(o))
-                dst[p++] = (char) o;
-        else {
-                bcopy(&tag(o), dst + p, sizeof (char));
-                p++;
-                if (!vector_p(o)) /* car is gc's index */
-                        bcopy(&car(o), dst + p, sizeof (cell));
-                else
-                        bzero(dst + p, sizeof (cell));
-                p += sizeof (cell);
-                if (!vector_p(o) || offset_p)
-                        bcopy(&cdr(o), dst + p, sizeof (cell));
-                else
-                        bzero(dst + p, sizeof (cell));
-                p += sizeof (cell);
-                if (acar_p(o))
-                        p = object_copy_imp(car(o), dst, offset_p, p);
-                if (acdr_p(o))
-                        p = object_copy_imp(cdr(o), dst, offset_p, p);
-                if (vector_p(o)) {
-                        bcopy(&(vector_ref(o, 0)) - VECTOR_HEAD, dst + p,
-                              sizeof (cell) * (vector_length(o) + VECTOR_HEAD));
-                        p += sizeof (cell) * (vector_length(o) + VECTOR_HEAD);
-                        for (i = 0; i < vector_length(o); i++)
-                                p = object_copy_imp(vector_ref(o, i), dst, offset_p, p);
+        size_t off;
+        llt_buffer *r;
+        r = llt_alloc(sizeof (cell), char);
+        *(cell *) r->data = obj;
+        off = sizeof (cell);
+        if (special_p(obj))
+                return r;
+        llt_grow_by(r, sizeof (char) + (sizeof (cell) * 2));
+        bcopy(&tag(obj), r->data + off, sizeof (char));
+        off += 1;
+        if (vector_p(obj))
+                bzero(r->data + off, sizeof (cell));
+        else
+                bcopy(&car(obj), r->data + off, sizeof (cell));
+        off += sizeof (cell);
+        if (vector_p(obj) && !offset_p)
+                bzero(r->data + off, sizeof (cell));
+        else
+                bcopy(&cdr(obj), r->data + off, sizeof (cell));
+        off += sizeof (cell);
+        if (acar_p(obj))
+                llt_extend_serial(r, llt_serialise(car(obj), offset_p), off);
+        if (acdr_p(obj))
+                llt_extend_serial(r, llt_serialise(cdr(obj), offset_p), off);
+        if (vector_p(obj)) {
+                llt_grow_by(r, sizeof (cell) * VECTOR_HEAD);
+                for (i = 1; i <= VECTOR_HEAD; i++) {
+                        bcopy(&vector_ref(obj, -i), r->data + off,
+                                sizeof (cell));
+                        off += sizeof (cell);
                 }
+                for (i = 0; i < vector_length(obj); i++)
+                        llt_extend_serial(r,
+                                llt_serialise(vector_ref(obj, i), offset_p),
+                                off);
         }
-        return p;
+        return r;
+}
+
+@ @c
+llt_buffer *
+llt_copy_refs (cell obj)
+{
+        size_t off = sizeof (cell);
+        llt_buffer *r = llt_alloc(1, cell);
+        *(cell *) r->data = obj;
+        if (acar_p(obj))
+                llt_extend_serial(r, llt_copy_refs(car(obj)), off);
+        if (acdr_p(obj))
+                llt_extend_serial(r, llt_copy_refs(cdr(obj)), off);
+        return r;
 }
 
 @ @c
 boolean
-object_compare (char *buf1,
-                size_t len,
-                cell o2,
-                boolean offset_p)
+llt_compare_serial (llt_buffer *buf1,
+                    cell obj,
+                    boolean offset_p)
 {
-        char *buf2;
         boolean r;
-        if (object_sizeof(o2) != len)
+        llt_buffer *buf2;
+        buf2 = llt_serialise(obj, offset_p);
+        if (buf1->len != buf2->len) {
+                free(buf2);
                 return bfalse;
-        ERR_OOM_P(buf2 = malloc(len));
-        object_copy(o2, buf2, offset_p);
-        r = (bcmp(buf1, buf2, len) == 0) ? btrue : bfalse;
+        }
+        r = (bcmp(buf1, buf2, buf1->len) == 0) ? btrue : bfalse;
         free(buf2);
         return r;
 }
 
-@ @c
-size_t
-object_sizeofref (cell o)
-{
-        int i;
-        size_t s = 1;
-        if (special_p(o))
-                return s;
-        if (acar_p(o))
-                s += object_sizeofref(car(o));
-        if (acdr_p(o))
-                s += object_sizeofref(cdr(o));
-        if (vector_p(o))
-                for (i = 0; i < vector_length(o); i++)
-                        s += object_sizeofref(vector_ref(o, i));
-        return s;
-}
-
-@ @c
-int
-object_copyref_imp (cell o,
-                    cell *dst,
-                    int p)
-{
-        int i;
-        dst[p++] = o;
-        if (special_p(o))
-                return p;
-        if (acar_p(o))
-                p = object_copyref_imp(car(o), dst, p);
-        if (acdr_p(o))
-                p = object_copyref_imp(cdr(o), dst, p);
-        if (vector_p(o))
-                for (i = 0; i < vector_length(o); i++)
-                        p = object_copyref_imp(vector_ref(o, i), dst, p);
-        return p;
-}
-
-@ @d SIZEOF_LLT_COPY (sizeof (size_t) + sizeof (cell))
-@<Type def...@>=
-typedef struct {
-        size_t size;
-        cell origin;
-        char buf[];
-} llt_copy;
-
-@ @<Function dec...@>=
-llt_copy *
-llt_copy_object (cell o,
-                 boolean with_offset_p);
-
-@ @c
-/* TODO merge these */
-llt_copy *
-llt_copy_object (cell o,
-                 boolean with_offset_p)
-{
-        size_t s = object_sizeof(o);
-        llt_copy *r;
-        r = malloc(s + SIZEOF_LLT_COPY);
-        ERR_OOM_P(r);
-        r->size = s;
-        r->origin = o;
-        object_copy(o, r->buf, with_offset_p);
-        return r;
-}
-
-@ @c
-#define probe_push(n, o) do {             \
-        vms_push(cons((o), NIL));         \
-        vms_set(cons(sym(n), vms_ref())); \
-        t = vms_pop();                    \
-        vms_set(cons(t, vms_ref()));      \
-} while (0)@;
-@#
-cell
-testing_build_probe (cell was_Acc)
-{
-        cell t;
-        vms_push(NIL);
-        probe_push("Acc", was_Acc);
-        probe_push("Args", Acc);
-        probe_push("Env", Env);
-        return vms_pop();
-}
-#undef probe_push
-
-@
-@d test_copy_env() Env
-@d test_compare_env(o) ((o) == Env)
-@d test_is_env(o,e) ((o) == (e))
-@<Old test executable wrapper@>=
-#define LL_TEST 1
-#include "lossless.h"
-void test_main (void);
-
-int
-main (int    argc __unused,
-      char **argv __unused)
-{
-        volatile boolean first = btrue;
-        vm_init();
-        if (argc > 1)
-                error(ERR_ARITY_EXTRA, NIL);
-        vm_prepare();
-        if (!first) {
-                printf("Bail out! Unhandled exception in test\n");
-                return EXIT_FAILURE;
-        }
-        first = bfalse;
-        test_main();
-        tap_plan(0);
-        return EXIT_SUCCESS;
-}
-
-@ The Perl ecosystem has a well-deserved reputation for its thorough
-testing regime and the quality (if not necessarily the quality) of
-the results so \LL/ is deliberately aping the interfaces that were
-developed there.
+@* Utilities: TAP. The Perl ecosystem has a well-deserved reputation
+for its thorough testing regime and the quality (if not necessarily
+the quality) of the results so \LL/ is deliberately aping the
+interfaces that were developed there.
 
 The \LL/ internal tests are a collection of test ``script''s each
 of which massages some \LL/ function or other and then reports what
@@ -4642,7 +4540,7 @@ end of testing with an argument of 0 to emit exactly one test plan.
 void tap_plan (int);
 boolean tap_ok (boolean, char *);
 int test_count_free_list (void);
-char * test_msgf (char *, const char *, char *, ...);
+char * test_msgf (char *, char *, char *, ...);
 void test_vm_state (char *, int);
 #endif
 
@@ -4709,7 +4607,7 @@ in-line.
 @ @c
 char *
 test_msgf (char *tmsg,
-           const char *tsrc,
+           char *tsrc,
            char *fmt,
            ...)
 {
@@ -4723,8 +4621,81 @@ test_msgf (char *tmsg,
         return tmsg;
 }
 
-@ The majority of tests validate some parts of the VM state, which
-parts is controlled by the |flags| parameter.
+@* Utilities: {\it test!probe}. Some tests need to examine a snapshot
+of the interpreter's run-time state which they do by calling {\it
+test!probe}.
+
+@<Function dec...@>=
+void compile_testing_probe (cell, cell, boolean);
+void compile_testing_probe_app (cell, cell, boolean);
+cell testing_build_probe (cell);
+
+@ @<Testing opcode names@>=
+OP_TEST_PROBE,
+
+@ @<Testing opcodes@>=
+[OP_TEST_PROBE] = { .name = "OP_VOV", .nargs = 1 },
+
+@ @<Testing imp...@>=
+case OP_TEST_PROBE:@/
+        Acc = testing_build_probe(rts_pop(1));
+        skip(1);
+        break;
+
+@ @<Testing primitives@>=
+{ "test!probe", compile_testing_probe },@/
+{ "test!probe-applying", compile_testing_probe_app },
+
+@ @d probe_push(n, o) do {
+        vms_push(cons((o), NIL));
+        vms_set(cons(sym(n), vms_ref()));
+        t = vms_pop();
+        vms_set(cons(t, vms_ref()));
+} while (0)
+@c
+cell
+testing_build_probe (cell was_Acc)
+{
+        cell t;
+        vms_push(NIL);
+        probe_push("Acc", was_Acc);
+        probe_push("Args", Acc);
+        probe_push("Env", Env);
+        return vms_pop();
+}
+
+@ @c
+void
+compile_testing_probe (cell op __unused,
+                       cell args,
+                       boolean tail_p __unused)
+{
+        emitop(OP_PUSH);
+        emitq(args);
+        emitop(OP_TEST_PROBE);
+}
+
+@ This variant evaluates its run-time arguments first.
+@c
+void
+compile_testing_probe_app (cell op __unused,
+                           cell args,
+                           boolean tail_p __unused)
+{
+        emitop(OP_PUSH);
+        cts_push(args = list_reverse(args, NULL, NULL));
+        emitq(NIL);
+        for (; pair_p(args); args = cdr(args)) {
+                emitop(OP_PUSH);
+                compile_expression(car(args), bfalse);
+                emitop(OP_CONS);
+        }
+        cts_pop();
+        emitop(OP_TEST_PROBE);
+}
+
+@ Utilities: VM State. Many tests validate some parts of the VM
+state. Which parts is controlled by the |flags| parameter.
 
 @q Attempting to make _STACKS multi-line confuses CWEB greatly @>
 @d TEST_VMSTATE_RUNNING         0x01
@@ -4795,35 +4766,15 @@ test_count_free_list (void)
         return r;
 }
 
-@* Sanity Test. This seemingly pointless test achieves two goals:
-the test harness can run it first and can abort the entire test
-suite if it fails, and it provides a simple demonstration of how
-individual test scripts interact with the harness, without obscuring
-it with the more complicated unit test framework below.
-
-@(t/sanity.c@>=
-#define LL_TEST
-#include "lossless.h"
-int
-main ()
-{
-        tap_plan(1);
-        vm_init();
-        vm_prepare();
-        vm_reset();
-        interpret();
-        tap_pass("LossLess compiles and runs");
-}
-
-@* Unit Tests. This is the very boring process of laboriously
-checking that each function or otherwise segregable unit of code
-does what it says on the tin. For want of a better model to follow
-I've taken inspiration from Mike Bland's article ``Goto Fail,
-Heartbleed, and Unit Testing Culture'' describing how he created
-unit tests for the major OpenSSL vulnerabilities known as ``goto
-fail'' and ``Heartbleed''. The article itself is behind some sort
-of Google wall but \pdfURL{Martin Fowler has reproduced it at
-https://martinfowler.com/articles/testing-culture.html}
+@* Utilities: Unit Tests. This is the very boring process of
+laboriously checking that each function or otherwise segregable
+unit of code does what it says on the tin. For want of a better
+model to follow I've taken inspiration from Mike Bland's article
+``Goto Fail, Heartbleed, and Unit Testing Culture'' describing how
+he created unit tests for the major OpenSSL vulnerabilities known
+as ``goto fail'' and ``Heartbleed''. The article itself is behind
+some sort of Google wall but \pdfURL{Martin Fowler has reproduced
+it at https://martinfowler.com/articles/testing-culture.html}
 {https://martinfowler.com/articles/testing-culture.html}.
 
 @(t/llt.h@>=
@@ -4832,16 +4783,19 @@ https://martinfowler.com/articles/testing-culture.html}
 @<Unit test fixture header@>@;
 typedef struct llt_Fixture llt_Fixture; /* user-defined */
 typedef void @[@] (*llt_thunk) (llt_Fixture *);
-typedef boolean @[@] (*llt_unit) (llt_Fixture *);
-typedef llt_Fixture * @[@] (*llt_fixture) (void);
+typedef boolean @[@] (*llt_case) (llt_Fixture *);
+typedef llt_buffer * @[@] (*llt_fixture) (void);
 extern llt_fixture Test_Fixtures[]; /* user-defined */
 
 #define fmsgf(...) test_msgf(buf, fix.name, __VA_ARGS__)
 #define fpmsgf(...) test_msgf(buf, fix->name, __VA_ARGS__)
 
-llt_Fixture * llt_alloc (size_t);
-boolean llt_main (llt_Fixture *);
-llt_Fixture * llt_prepare (void);
+#define llt_fix_append(o,d) ((o) == NULL    \
+        ? (o) = llt_alloc((d), llt_Fixture) \
+        : llt_grow_by((o), (d)))
+
+boolean llt_main (size_t, llt_Fixture *);
+llt_buffer * llt_prepare (void);
 
 #endif /* |LLT_H| */
 
@@ -4851,13 +4805,12 @@ implement its own |llt_Fixture| with this common header.
 
 @<Unit test fixture header@>=
 #define LLT_FIXTURE_HEADER  \
-        const char *name;   \
-        const char *suffix; \
+        char *name;         \
+        char *suffix;       \
         int id;             \
-        int max;            \
         llt_thunk prepare;  \
         llt_thunk act;      \
-        llt_unit test;      \
+        llt_case test;      \
         llt_thunk destroy;  \
         boolean skip_gc_p@; /* no semicolon */
 
@@ -4875,7 +4828,7 @@ int
 main (int argc __unused,
       char **argv __unused)
 {
-        llt_Fixture *suite;
+        llt_buffer *suite;
         if (argc > 1) {
                 printf("usage: %s", argv[0]);
                 return EXIT_FAILURE;
@@ -4884,33 +4837,22 @@ main (int argc __unused,
         vm_init();
 #endif
         suite = llt_prepare();
-        llt_main(suite);
+        llt_main(suite->len, (llt_Fixture *) suite->data);
         free(suite);
         tap_plan(0);
 }
 
 @ @<Unit test body@>=
-llt_Fixture *
-llt_alloc (size_t n)
-{
-        llt_Fixture *f;
-        size_t i;
-        ERR_OOM_P(f = calloc(n, sizeof (llt_Fixture)));
-        for (i = 0; i < n; i++)
-                f[i].max = n;
-        return f;
-}
-
-@ @<Unit test body@>=
 boolean
-llt_main (llt_Fixture *suite)
+llt_main (size_t count,
+          llt_Fixture *suite)
 {
         int i;
         int d, f0, f1;
         boolean all, ok;
         char buf[TEST_BUFSIZE] = {0}, *name;
         all = btrue;
-        for (i = 0; i < suite->max; i++) {
+        for (i = 0; i < (int) count; i++) {
                 if (suite[i].suffix)
                         snprintf(buf, TEST_BUFSIZE, "%s (%s)",
                                 suite[i].name, suite[i].suffix);
@@ -4968,30 +4910,80 @@ else
 suite[i].name = buf;
 
 @ @<Unit test body@>=
-llt_Fixture *
+llt_buffer *
 llt_prepare (void)
 {
-        llt_fixture *s = Test_Fixtures, *t;
-        llt_Fixture *r = NULL, *q, *p;
-        int c = 0, i;
-        int f = sizeof (llt_Fixture);
-        for (t = s; *t; t++) {
-                q = (*t)();
-                p = reallocarray(r, c + q->max, f);
-                ERR_OOM_P(p);
-                r = p;
-                bcopy(q, r + c, f * q->max);
-                c += q->max;
-                free(q);
+        llt_fixture *t;
+        llt_buffer *f, *r;
+        size_t old;
+        int i;
+        r = llt_alloc(0, llt_Fixture);
+        for (t = Test_Fixtures; *t != NULL; t++) {
+                f = (*t)();
+                old = r->len;
+                llt_grow_by(r, f->len);
+                bcopy(f->data, ((llt_Fixture *) r->data) + old,
+                        f->len * f->size);
+                free(f);
         }
-        for (i = 0; i < c; i++) {
-                r[i].id = i;
-                r[i].max = c;
-        }
+        for (i = 0; i < (int) r->len; i++)
+                ((llt_Fixture *) r->data)[i].id = i;
         return r;
 }
 
-@*1 Heap Allocation. The first units we test are the memory allocators
+@* Old tests. Some early tests were churned out while the test
+system itself was in flux. These tests will be incorporated into
+the unit testing framework eventually but until that is carried out
+they need a legacy test script wrapper.
+
+@d test_copy_env() Env
+@d test_compare_env(o) ((o) == Env)
+@d test_is_env(o,e) ((o) == (e))
+@<Old test executable wrapper@>=
+#define LL_TEST 1
+#include "lossless.h"
+void test_main (void);
+
+int
+main (int    argc __unused,
+      char **argv __unused)
+{
+        volatile boolean first = btrue;
+        vm_init();
+        if (argc > 1)
+                error(ERR_ARITY_EXTRA, NIL);
+        vm_prepare();
+        if (!first) {
+                printf("Bail out! Unhandled exception in test\n");
+                return EXIT_FAILURE;
+        }
+        first = bfalse;
+        test_main();
+        tap_plan(0);
+        return EXIT_SUCCESS;
+}
+
+@* Sanity Test. This seemingly pointless test achieves two goals:
+the test harness can run it first and can abort the entire test
+suite if it fails, and it provides a simple demonstration of how
+individual test scripts interact with the harness, without obscuring
+it with the more complicated unit test framework below.
+
+@(t/sanity.c@>=
+#define LL_TEST
+#include "lossless.h"
+int
+main ()
+{
+        tap_plan(1);
+        vm_init();
+        vm_prepare();
+        vm_reset();
+        interpret();
+        tap_pass("LossLess compiles and runs");
+}
+
+@* Heap Allocation. The first units we test are the memory allocators
 because I've already found embarrassing bugs there proving that
 even that ``obvious'' code needs manual verification. To do that
 we will need to be able to make |reallocarray| fail without actually
@@ -5072,10 +5064,9 @@ struct llt_Fixture {
         int   allocations;
         int   Poolsize;
         int   Segment;
-        cell *CAR;
-        cell *CDR;
-        char *TAG;
-        char *heapcopy;
+        llt_buffer *CAR;
+        llt_buffer *CDR;
+        llt_buffer *TAG;
         cell *save_CAR;
         cell *save_CDR;
         char *save_TAG;
@@ -5101,32 +5092,35 @@ llt_fixture Test_Fixtures[] = {@|
 void
 llt_Grow_Pool_prepare (llt_Fixture *fix)
 {
-        if (fix->Poolsize) {
-                int cs = fix->Poolsize;
-                fix->heapcopy = reallocarray(NULL, cs,
-                        2 * sizeof (cell) + sizeof (char));
-                fix->save_CAR = (cell*) fix->heapcopy;
-                fix->save_CDR = (cell*) (fix->heapcopy + sizeof (cell) * cs);
-                fix->save_TAG = fix->heapcopy + sizeof (cell) * cs * 2;
-                bcopy(fix->CAR, fix->save_CAR, sizeof (cell) * cs);
-                bcopy(fix->CDR, fix->save_CDR, sizeof (cell) * cs);
-                bcopy(fix->TAG, fix->save_TAG, sizeof (char) * cs);
+        if (Cells_Poolsize) {
+                free(CAR);
+                free(CDR);
+                free(TAG);
         }
-        CAR = fix->CAR;
-        CDR = fix->CDR;
-        TAG = fix->TAG;
+        CAR = CDR = NULL;
+        TAG = NULL;
+        if (fix->Poolsize) {
+                enlarge_pool(CAR, fix->Poolsize, cell);
+                enlarge_pool(CDR, fix->Poolsize, cell);
+                enlarge_pool(TAG, fix->Poolsize, char);
+                bcopy(fix->CAR->data, CAR, sizeof (cell) * fix->Poolsize);
+                bcopy(fix->CDR->data, CDR, sizeof (cell) * fix->Poolsize);
+                bcopy(fix->TAG->data, TAG, sizeof (char) * fix->Poolsize);
+                fix->save_CAR = CAR;
+                fix->save_CDR = CDR;
+                fix->save_TAG = TAG;
+        }
         Cells_Poolsize = fix->Poolsize;
         Cells_Segment = fix->Segment;
 }
 
 @ @<Unit test: grow heap...@>=
 void
-llt_Grow_Pool_destroy (llt_Fixture *fix)
+llt_Grow_Pool_destroy (llt_Fixture *fix __unused)
 {
         free(CAR);
         free(CDR);
         free(TAG);
-        free(fix->heapcopy);
         CAR = CDR = NULL;
         TAG = NULL;
         Cells_Poolsize = 0;
@@ -5182,15 +5176,15 @@ tap_more(ok, CAR != CDR && CAR != (cell*) TAG,
         fpmsgf("CAR, CDR & TAG are unique"));
 tap_more(ok, CAR != NULL,
         fpmsgf("CAR is not NULL"));
-tap_more(ok, !bcmp(CAR, fix->save_CAR, sizeof (cell) * fix->Poolsize),
+tap_more(ok, !bcmp(CAR, fix->CAR->data, sizeof (cell) * fix->Poolsize),
         fpmsgf("CAR heap is unchanged"));
 tap_more(ok, CDR != NULL,
         fpmsgf("CDR is not NULL"));
-tap_more(ok, !memcmp(CDR, fix->save_CDR, sizeof (cell) * fix->Poolsize),
+tap_more(ok, !bcmp(CDR, fix->CDR->data, sizeof (cell) * fix->Poolsize),
         fpmsgf("CDR heap is unchanged"));
 tap_more(ok, TAG != NULL,
         fpmsgf("TAG is not NULL"));
-tap_more(ok, !memcmp(TAG, fix->save_TAG, sizeof (char) * fix->Poolsize),
+tap_more(ok, !bcmp(TAG, fix->TAG->data, sizeof (char) * fix->Poolsize),
         fpmsgf("TAG heap is unchanged"));
 
 @ @<Unit test part: grow heap pool, validate car failure@>=
@@ -5198,11 +5192,11 @@ ok = tap_ok(Cells_Poolsize == fix->Poolsize,
         fpmsgf("Cells_Poolsize is not increased"));
 tap_more(ok, Cells_Segment == fix->Segment,
         fpmsgf("Cells_Segment is not increased"));
-tap_more(ok, CAR == fix->CAR,
+tap_more(ok, CAR == fix->save_CAR,
         fpmsgf("CAR is unchanged"));
-tap_more(ok, CDR == fix->CDR,
+tap_more(ok, CDR == fix->save_CDR,
         fpmsgf("CDR is unchanged"));
-tap_more(ok, TAG == fix->TAG,
+tap_more(ok, TAG == fix->save_TAG,
         fpmsgf("TAG is unchanged"));
 
 @ @<Unit test part: grow heap pool, validate cdr failure@>=
@@ -5210,11 +5204,11 @@ ok = tap_ok(Cells_Poolsize == fix->Poolsize,
         fpmsgf("Cells_Poolsize is not increased"));
 tap_more(ok, Cells_Segment == fix->Segment,
         fpmsgf("Cells_Segment is not increased"));
-tap_more(ok, !memcmp(CAR, fix->save_CAR, sizeof (cell) * fix->Poolsize),
+tap_more(ok, !bcmp(CAR, fix->CAR->data, sizeof (cell) * fix->Poolsize),
         fpmsgf("CAR heap is unchanged"));
-tap_more(ok, CDR == fix->CDR,
+tap_more(ok, CDR == fix->save_CDR,
         fpmsgf("CDR is unchanged"));
-tap_more(ok, TAG == fix->TAG,
+tap_more(ok, TAG == fix->save_TAG,
         fpmsgf("TAG is unchanged"));
 
 @ @<Unit test part: grow heap pool, validate tag failure@>=
@@ -5222,19 +5216,22 @@ ok = tap_ok(Cells_Poolsize == fix->Poolsize,
         fpmsgf("Cells_Poolsize is not increased"));
 tap_more(ok, Cells_Segment == fix->Segment,
         fpmsgf("Cells_Segment is not increased"));
-tap_more(ok, !memcmp(CAR, fix->save_CAR, sizeof (cell) * fix->Poolsize),
+tap_more(ok, !bcmp(CAR, fix->CAR->data, sizeof (cell) * fix->Poolsize),
         fpmsgf("CAR heap is unchanged"));
-tap_more(ok, !memcmp(CDR, fix->save_CDR, sizeof (cell) * fix->Poolsize),
+tap_more(ok, !bcmp(CDR, fix->CDR->data, sizeof (cell) * fix->Poolsize),
         fpmsgf("CDR heap is unchanged"));
-tap_more(ok, TAG == fix->TAG,
+tap_more(ok, TAG == fix->save_TAG,
         fpmsgf("TAG is unchanged"));
 
 @ @<Unit test: grow heap...@>=
-llt_Fixture *
-llt_Grow_Pool_fix (llt_Fixture *fix,
-                   const char *name)
+llt_buffer *
+llt_Grow_Pool_fix (const char *name)
 {
-        fix->name = name;
+        llt_buffer *r;
+        llt_Fixture *fix;
+        r = llt_alloc(1, llt_Fixture);
+        fix = (llt_Fixture *) r->data;
+        fix->name = (char *) name;
         fix->prepare = llt_Grow_Pool_prepare;
         fix->destroy = llt_Grow_Pool_destroy;
         fix->act = llt_Grow_Pool_act;
@@ -5243,50 +5240,50 @@ llt_Grow_Pool_fix (llt_Fixture *fix,
         fix->expect = LLT_GROW_POOL_SUCCESS;
         fix->allocations = -1;
         fix->Segment = HEAP_SEGMENT;
-        return fix;
+        return r;
 }
 
 @ This tests that allocation is successful the first time the heap
 is ever allocated. It is the simplest test in this unit.
 
 @<Unit test: grow heap...@>=
-llt_Fixture *
+llt_buffer *
 llt_Grow_Pool__Initial_Success (void)
 {
-        return llt_Grow_Pool_fix(llt_alloc(1), __func__);
+        return llt_Grow_Pool_fix(__func__);
 }
 
 @ If the very first call to |reallocarray| fails then everything
 should remain unchanged.
 
 @<Unit test: grow heap...@>=
-llt_Fixture *
+llt_buffer *
 llt_Grow_Pool__Immediate_Fail (void)
 {
-        llt_Fixture *fix = llt_Grow_Pool_fix(llt_alloc(1), __func__);
-        fix->expect = LLT_GROW_POOL_FAIL_CAR;
-        fix->allocations = 0;
-        return fix;
+        llt_buffer *r = llt_Grow_Pool_fix(__func__);
+        ((llt_Fixture *) r->data)->expect = LLT_GROW_POOL_FAIL_CAR;
+        ((llt_Fixture *) r->data)->allocations = 0;
+        return r;
 }
 
 @ @<Unit test: grow heap...@>=
-llt_Fixture *
+llt_buffer *
 llt_Grow_Pool__Second_Fail (void)
 {
-        llt_Fixture *fix = llt_Grow_Pool_fix(llt_alloc(1), __func__);
-        fix->expect = LLT_GROW_POOL_FAIL_CDR;
-        fix->allocations = 1;
-        return fix;
+        llt_buffer *r = llt_Grow_Pool_fix(__func__);
+        ((llt_Fixture *) r->data)->expect = LLT_GROW_POOL_FAIL_CDR;
+        ((llt_Fixture *) r->data)->allocations = 1;
+        return r;
 }
 
 @ @<Unit test: grow heap...@>=
-llt_Fixture *
+llt_buffer *
 llt_Grow_Pool__Third_Fail (void)
 {
-        llt_Fixture *fix = llt_Grow_Pool_fix(llt_alloc(1), __func__);
-        fix->expect = LLT_GROW_POOL_FAIL_TAG;
-        fix->allocations = 2;
-        return fix;
+        llt_buffer *r = llt_Grow_Pool_fix(__func__);
+        ((llt_Fixture *) r->data)->expect = LLT_GROW_POOL_FAIL_TAG;
+        ((llt_Fixture *) r->data)->allocations = 2;
+        return r;
 }
 
 @ Data already on the heap must be preserved exactly.
@@ -5296,64 +5293,64 @@ void
 llt_Grow_Pool__fill(llt_Fixture *fix)
 {
         size_t i;
-        fix->CAR = reallocarray(NULL, fix->Poolsize, sizeof (cell));
-        fix->CDR = reallocarray(NULL, fix->Poolsize, sizeof (cell));
-        fix->TAG = reallocarray(NULL, fix->Poolsize, sizeof (char));
+        fix->CAR = llt_alloc(fix->Poolsize, cell);
+        fix->CDR = llt_alloc(fix->Poolsize, cell);
+        fix->TAG = llt_alloc(fix->Poolsize, char);
         for (i = 0; i < (fix->Poolsize * sizeof (cell)) / sizeof (int); i++)
-                *(((int *) fix->CAR) + i) = rand();
+                *(((int *) fix->CAR->data) + i) = rand();
         for (i = 0; i < (fix->Poolsize * sizeof (cell)) / sizeof (int); i++)
-                *(((int *) fix->CDR) + i) = rand();
+                *(((int *) fix->CDR->data) + i) = rand();
         for (i = 0; i < (fix->Poolsize * sizeof (char)) / sizeof (int); i++)
-                *(((int *) fix->TAG) + i) = rand();
+                *(((int *) fix->TAG->data) + i) = rand();
 }
 
 @ @<Unit test: grow heap...@>=
-llt_Fixture *
+llt_buffer *
 llt_Grow_Pool__Full_Success (void)
 {
-        llt_Fixture *fix = llt_Grow_Pool_fix(llt_alloc(1), __func__);
-        fix->Poolsize = HEAP_SEGMENT;
-        llt_Grow_Pool__fill(fix);
-        return fix;
+        llt_buffer *r = llt_Grow_Pool_fix(__func__);
+        ((llt_Fixture *) r->data)->Poolsize = HEAP_SEGMENT;
+        llt_Grow_Pool__fill((llt_Fixture *) r->data);
+        return r;
 }
 
 @ @<Unit test: grow heap...@>=
-llt_Fixture *
+llt_buffer *
 llt_Grow_Pool__Full_Immediate_Fail (void)
 {
-        llt_Fixture *fix = llt_Grow_Pool_fix(llt_alloc(1), __func__);
-        fix->expect = LLT_GROW_POOL_FAIL_CAR;
-        fix->allocations = 0;
-        fix->Poolsize = HEAP_SEGMENT;
-        llt_Grow_Pool__fill(fix);
-        return fix;
+        llt_buffer *r = llt_Grow_Pool_fix(__func__);
+        ((llt_Fixture *) r->data)->expect = LLT_GROW_POOL_FAIL_CAR;
+        ((llt_Fixture *) r->data)->allocations = 0;
+        ((llt_Fixture *) r->data)->Poolsize = HEAP_SEGMENT;
+        llt_Grow_Pool__fill((llt_Fixture *) r->data);
+        return r;
 }
 
 @ @<Unit test: grow heap...@>=
-llt_Fixture *
+llt_buffer *
 llt_Grow_Pool__Full_Second_Fail (void)
 {
-        llt_Fixture *fix = llt_Grow_Pool_fix(llt_alloc(1), __func__);
-        fix->expect = LLT_GROW_POOL_FAIL_CDR;
-        fix->allocations = 1;
-        fix->Poolsize = HEAP_SEGMENT;
-        llt_Grow_Pool__fill(fix);
-        return fix;
+        llt_buffer *r = llt_Grow_Pool_fix(__func__);
+        ((llt_Fixture *) r->data)->expect = LLT_GROW_POOL_FAIL_CDR;
+        ((llt_Fixture *) r->data)->allocations = 1;
+        ((llt_Fixture *) r->data)->Poolsize = HEAP_SEGMENT;
+        llt_Grow_Pool__fill((llt_Fixture *) r->data);
+        return r;
 }
 
 @ @<Unit test: grow heap...@>=
-llt_Fixture *
+llt_buffer *
 llt_Grow_Pool__Full_Third_Fail (void)
 {
-        llt_Fixture *fix = llt_Grow_Pool_fix(llt_alloc(1), __func__);
-        fix->expect = LLT_GROW_POOL_FAIL_TAG;
-        fix->allocations = 2;
-        fix->Poolsize = HEAP_SEGMENT;
-        llt_Grow_Pool__fill(fix);
-        return fix;
+        llt_buffer *r = llt_Grow_Pool_fix(__func__);
+        ((llt_Fixture *) r->data)->expect = LLT_GROW_POOL_FAIL_TAG;
+        ((llt_Fixture *) r->data)->allocations = 2;
+        ((llt_Fixture *) r->data)->Poolsize = HEAP_SEGMENT;
+        llt_Grow_Pool__fill((llt_Fixture *) r->data);
+        return r;
 }
 
-@*1 Vector Heap. Testing the vector's heap is the same but simpler
+@* Vector Heap. Testing the vector's heap is the same but simpler
 because it has 1 not 3 possible error conditions so this section
 is duplicated from the previous without further explanation.
 
@@ -5462,11 +5459,14 @@ tap_more(ok, VECTOR == fix->VECTOR,
         fpmsgf("VECTOR is unchanged"));
 
 @ @<Unit test: grow vector...@>=
-llt_Fixture *
-llt_Grow_Vector_Pool_fix (llt_Fixture *fix,
-                          const char *name)
+llt_buffer *
+llt_Grow_Vector_Pool_fix (const char *name)
 {
-        fix->name = name;
+        llt_buffer *r;
+        llt_Fixture *fix;
+        r = llt_alloc(1, llt_Fixture);
+        fix = (llt_Fixture *) r->data;
+        fix->name = (char *) name;
         fix->prepare = llt_Grow_Vector_Pool_prepare;
         fix->destroy = llt_Grow_Vector_Pool_destroy;
         fix->act = llt_Grow_Vector_Pool_act;
@@ -5475,24 +5475,24 @@ llt_Grow_Vector_Pool_fix (llt_Fixture *fix,
         fix->expect = LLT_GROW_VECTOR_POOL_SUCCESS;
         fix->allocations = -1;
         fix->Segment = HEAP_SEGMENT;
-        return fix;
+        return r;
 }
 
 @ @<Unit test: grow vector...@>=
-llt_Fixture *
+llt_buffer *
 llt_Grow_Vector_Pool__Empty_Success (void)
 {
-        return llt_Grow_Vector_Pool_fix(llt_alloc(1), __func__);
+        return llt_Grow_Vector_Pool_fix(__func__);
 }
 
 @ @<Unit test: grow vector...@>=
-llt_Fixture *
+llt_buffer *
 llt_Grow_Vector_Pool__Empty_Fail (void)
 {
-        llt_Fixture *fix = llt_Grow_Vector_Pool_fix(llt_alloc(1), __func__);
-        fix->expect = LLT_GROW_VECTOR_POOL_FAIL;
-        fix->allocations = 0;
-        return fix;
+        llt_buffer *r = llt_Grow_Vector_Pool_fix(__func__);
+        ((llt_Fixture *) r->data)->expect = LLT_GROW_VECTOR_POOL_FAIL;
+        ((llt_Fixture *) r->data)->allocations = 0;
+        return r;
 }
 
 @ @<Unit test: grow vector...@>=
@@ -5506,28 +5506,28 @@ llt_Grow_Vector_Pool__fill(llt_Fixture *fix)
 }
 
 @ @<Unit test: grow vector...@>=
-llt_Fixture *
+llt_buffer *
 llt_Grow_Vector_Pool__Full_Success (void)
 {
-        llt_Fixture *fix = llt_Grow_Vector_Pool_fix(llt_alloc(1), __func__);
-        fix->Poolsize = HEAP_SEGMENT;
-        llt_Grow_Vector_Pool__fill(fix);
-        return fix;
+        llt_buffer *r = llt_Grow_Vector_Pool_fix(__func__);
+        ((llt_Fixture *) r->data)->Poolsize = HEAP_SEGMENT;
+        llt_Grow_Vector_Pool__fill((llt_Fixture *) r->data);
+        return r;
 }
 
 @ @<Unit test: grow vector...@>=
-llt_Fixture *
+llt_buffer *
 llt_Grow_Vector_Pool__Full_Fail (void)
 {
-        llt_Fixture *fix = llt_Grow_Vector_Pool_fix(llt_alloc(1), __func__);
-        fix->expect = LLT_GROW_VECTOR_POOL_FAIL;
-        fix->allocations = 0;
-        fix->Poolsize = HEAP_SEGMENT;
-        llt_Grow_Vector_Pool__fill(fix);
-        return fix;
+        llt_buffer *r = llt_Grow_Vector_Pool_fix(__func__);
+        ((llt_Fixture *) r->data)->expect = LLT_GROW_VECTOR_POOL_FAIL;
+        ((llt_Fixture *) r->data)->allocations = 0;
+        ((llt_Fixture *) r->data)->Poolsize = HEAP_SEGMENT;
+        llt_Grow_Vector_Pool__fill((llt_Fixture *) r->data);
+        return r;
 }
 
-@*1 Garbage Collector. There are three parts to the garbage collector,
+@* Garbage Collector. There are three parts to the garbage collector,
 each building on the last. The inner-most component is |mark| which
 searches the heap for any data which are in use.
 
@@ -5611,7 +5611,7 @@ enum llt_GC_Mark_recursion {
 struct llt_Fixture {
         LLT_FIXTURE_HEADER;
         cell  safe;
-        char *copy;
+        llt_buffer *copy;
         size_t len;
         boolean proper_pair_p;
         enum llt_GC_Mark_recursion complex;
@@ -5733,9 +5733,7 @@ test (created below) gets serialised.
 void
 llt_GC_Mark_prepare (llt_Fixture *fix)
 {
-        fix->len = object_sizeof(fix->safe);
-        ERR_OOM_P(fix->copy = malloc(fix->len));
-        object_copy(fix->safe, fix->copy, btrue);
+        fix->copy = llt_serialise(fix->safe, btrue);
 }
 
 @ @<Unit test: garbage collector |mark|@>=
@@ -5761,45 +5759,44 @@ llt_GC_Mark_test (llt_Fixture *fix)
         ok = tap_ok(llt_GC_Mark_is_marked_p(fix->safe),
                 fpmsgf("the object is fully marked"));
         llt_GC_Mark_unmark_m(fix->safe);
-        tap_again(ok, object_compare(fix->copy, fix->len, fix->safe, btrue),
+        tap_again(ok, llt_compare_serial(fix->copy, fix->safe, btrue),
                 fpmsgf("the object is unchanged"));
         return ok;
 }
 
 @ @<Unit test: garbage collector |mark|@>=
-llt_Fixture *
+void
 llt_GC_Mark_fix (llt_Fixture *fix,
-                 const char *name)
+                 const char *name,
+                 char *suffix,
+                 cell value)
 {
-        fix->name = name;
         fix->prepare = llt_GC_Mark_prepare;
         fix->destroy = llt_GC_Mark_destroy;
         fix->act = llt_GC_Mark_act;
         fix->test = llt_GC_Mark_test;
-        fix->safe = NIL;
-        return fix;
+        fix->name = (char *) name;
+        fix->suffix = suffix;
+        fix->safe = value;
 }
 
 @ This defines 6 test cases, one for each global object, which need
 no further preparation.
 
 @<Unit test: garbage collector |mark|@>=
-#define mkfix(n,o) do {                     \
-        llt_GC_Mark_fix(f + (n), __func__); \
-        f[(n)].suffix = #o;                 \
-        f[(n)].safe = (o);                  \
-} while (0)
-llt_Fixture *
+#define mkfix(n,o) \
+        llt_GC_Mark_fix(((llt_Fixture *) r->data) + (n), __func__, #o, o)
+llt_buffer *
 llt_GC_Mark__Global (void)
 {
-        llt_Fixture *f = llt_alloc(6);
+        llt_buffer *r = llt_alloc(6, llt_Fixture);
         mkfix(0, NIL);
         mkfix(1, FALSE);
         mkfix(2, TRUE);
         mkfix(3, END_OF_FILE);
         mkfix(4, VOID);
         mkfix(5, UNDEFINED);
-        return f;
+        return r;
 }
 #undef mkfix
 
@@ -5828,49 +5825,52 @@ llt_GC_Mark__PLAV_prepare (llt_Fixture *fix)
 }
 
 @ @<Unit test: garbage collector |mark|@>=
-llt_Fixture *
+llt_buffer *
 llt_GC_Mark__Atom (void)
 {
-        llt_Fixture *f = llt_alloc(1);
-        llt_GC_Mark_fix(f, __func__);
-        f->simplex = LLT_GC_MARK_SIMPLE_ATOM;
-        f->prepare = llt_GC_Mark__PLAV_prepare;
-        return f;
+        llt_buffer *fix = llt_alloc(1, llt_Fixture);
+        llt_GC_Mark_fix((llt_Fixture *) fix->data, __func__, NULL, NIL);
+        ((llt_Fixture *) fix->data)->simplex = LLT_GC_MARK_SIMPLE_ATOM;
+        ((llt_Fixture *) fix->data)->prepare = llt_GC_Mark__PLAV_prepare;
+        return fix;
 }
 
 @ @<Unit test: garbage collector |mark|@>=
-llt_Fixture *
+llt_buffer *
 llt_GC_Mark__Long_Atom (void)
 {
-        llt_Fixture *f = llt_alloc(1);
-        llt_GC_Mark_fix(f, __func__);
-        f->simplex = LLT_GC_MARK_SIMPLE_LONG_ATOM;
-        f->prepare = llt_GC_Mark__PLAV_prepare;
-        return f;
+        llt_buffer *fix = llt_alloc(1, llt_Fixture);
+        llt_GC_Mark_fix((llt_Fixture *) fix->data, __func__, NULL, NIL);
+        ((llt_Fixture *) fix->data)->simplex = LLT_GC_MARK_SIMPLE_LONG_ATOM;
+        ((llt_Fixture *) fix->data)->prepare = llt_GC_Mark__PLAV_prepare;
+        return fix;
 }
 
 @ @<Unit test: garbage collector |mark|@>=
-llt_Fixture *
+llt_buffer *
 llt_GC_Mark__Pair (void)
 {
-        llt_Fixture *f = llt_alloc(2);
-        llt_GC_Mark_fix(f + 0, __func__);
-        llt_GC_Mark_fix(f + 1, __func__);
-        f[0].simplex = f[1].simplex = LLT_GC_MARK_SIMPLE_PAIR;
-        f[0].prepare = f[1].prepare = llt_GC_Mark__PLAV_prepare;
-        f[0].proper_pair_p = btrue;
-        return f;
+        llt_buffer *r;
+        llt_Fixture *fix;
+        r = llt_alloc(2, llt_Fixture);
+        fix = (llt_Fixture *) r->data;
+        llt_GC_Mark_fix(fix + 0, __func__, NULL, NIL);
+        llt_GC_Mark_fix(fix + 1, __func__, NULL, NIL);
+        fix[0].simplex = fix[1].simplex = LLT_GC_MARK_SIMPLE_PAIR;
+        fix[0].prepare = fix[1].prepare = llt_GC_Mark__PLAV_prepare;
+        fix[0].proper_pair_p = btrue;
+        return r;
 }
 
 @ @<Unit test: garbage collector |mark|@>=
-llt_Fixture *
+llt_buffer *
 llt_GC_Mark__Vector (void)
 {
-        llt_Fixture *f = llt_alloc(1);
-        llt_GC_Mark_fix(f, __func__);
-        f->simplex = LLT_GC_MARK_SIMPLE_VECTOR;
-        f->prepare = llt_GC_Mark__PLAV_prepare;
-        return f;
+        llt_buffer *fix = llt_alloc(1, llt_Fixture);
+        llt_GC_Mark_fix((llt_Fixture *) fix->data, __func__, NULL, NIL);
+        ((llt_Fixture *) fix->data)->simplex = LLT_GC_MARK_SIMPLE_VECTOR;
+        ((llt_Fixture *) fix->data)->prepare = llt_GC_Mark__PLAV_prepare;
+        return fix;
 }
 
 @ Preparing the recursive test cases involves a lot of repetetive
@@ -6090,97 +6090,97 @@ case LLT_GC_MARK_RECURSIVE_VVV:
         vector_ref(fix->safe, 2) = cdr(Tmp_Test);
         break;
 
-@ @d llt_GC_Mark_recfix(f, n, c) do {
-        llt_GC_Mark_fix(f + (n), __func__);
-        f[(n)].prepare = llt_GC_Mark__Recursive_prepare;
-        f[(n)].complex = (c);
-        f[(n)].suffix = #c;
+@ @d llt_GC_Mark_recfix(r, n, c) do {
+        llt_GC_Mark_fix(((llt_Fixture *) (r)->data) + (n), __func__, NULL, NIL);
+        ((llt_Fixture *) (r)->data)[(n)].prepare = llt_GC_Mark__Recursive_prepare;
+        ((llt_Fixture *) (r)->data)[(n)].complex = (c);
+        ((llt_Fixture *) (r)->data)[(n)].suffix = #c;
 } while (0)
 @<Unit test: garbage collector |mark|@>=
-llt_Fixture *
+llt_buffer *
 llt_GC_Mark__Recursive_P (void)
 {
-        llt_Fixture *f = llt_alloc(5);
-        llt_GC_Mark_recfix(f, 0, LLT_GC_MARK_RECURSIVE_PA);
-        llt_GC_Mark_recfix(f, 1, LLT_GC_MARK_RECURSIVE_PL);
-        llt_GC_Mark_recfix(f, 2, LLT_GC_MARK_RECURSIVE_PP);
-        llt_GC_Mark_recfix(f, 3, LLT_GC_MARK_RECURSIVE_PV);
-        llt_GC_Mark_recfix(f, 4, LLT_GC_MARK_RECURSIVE_PLL);
-        return f;
+        llt_buffer *r = llt_alloc(5, llt_Fixture);
+        llt_GC_Mark_recfix(r, 0, LLT_GC_MARK_RECURSIVE_PA);
+        llt_GC_Mark_recfix(r, 1, LLT_GC_MARK_RECURSIVE_PL);
+        llt_GC_Mark_recfix(r, 2, LLT_GC_MARK_RECURSIVE_PP);
+        llt_GC_Mark_recfix(r, 3, LLT_GC_MARK_RECURSIVE_PV);
+        llt_GC_Mark_recfix(r, 4, LLT_GC_MARK_RECURSIVE_PLL);
+        return r;
 }
 
 @ @<Unit test: garbage collector |mark|@>=
-llt_Fixture *
+llt_buffer *
 llt_GC_Mark__Recursive_V (void)
 {
-        llt_Fixture *f = llt_alloc(5);
-        llt_GC_Mark_recfix(f, 0, LLT_GC_MARK_RECURSIVE_VA);
-        llt_GC_Mark_recfix(f, 1, LLT_GC_MARK_RECURSIVE_VL);
-        llt_GC_Mark_recfix(f, 2, LLT_GC_MARK_RECURSIVE_VP);
-        llt_GC_Mark_recfix(f, 3, LLT_GC_MARK_RECURSIVE_VV);
-        llt_GC_Mark_recfix(f, 4, LLT_GC_MARK_RECURSIVE_VLL);
-        return f;
+        llt_buffer *r = llt_alloc(5, llt_Fixture);
+        llt_GC_Mark_recfix(r, 0, LLT_GC_MARK_RECURSIVE_VA);
+        llt_GC_Mark_recfix(r, 1, LLT_GC_MARK_RECURSIVE_VL);
+        llt_GC_Mark_recfix(r, 2, LLT_GC_MARK_RECURSIVE_VP);
+        llt_GC_Mark_recfix(r, 3, LLT_GC_MARK_RECURSIVE_VV);
+        llt_GC_Mark_recfix(r, 4, LLT_GC_MARK_RECURSIVE_VLL);
+        return r;
 }
 
 @ @<Unit test: garbage collector |mark|@>=
-llt_Fixture *
+llt_buffer *
 llt_GC_Mark__Recursive_L (void)
 {
-        llt_Fixture *f = llt_alloc(2);
-        llt_GC_Mark_recfix(f, 0, LLT_GC_MARK_RECURSIVE_LL);
-        llt_GC_Mark_recfix(f, 1, LLT_GC_MARK_RECURSIVE_LLL);
-        return f;
+        llt_buffer *r = llt_alloc(2, llt_Fixture);
+        llt_GC_Mark_recfix(r, 0, LLT_GC_MARK_RECURSIVE_LL);
+        llt_GC_Mark_recfix(r, 1, LLT_GC_MARK_RECURSIVE_LLL);
+        return r;
 }
 
 @ @<Unit test: garbage collector |mark|@>=
-llt_Fixture *
+llt_buffer *
 llt_GC_Mark__Recursive_PP (void)
 {
-        llt_Fixture *f = llt_alloc(4);
-        llt_GC_Mark_recfix(f, 0, LLT_GC_MARK_RECURSIVE_PPA);
-        llt_GC_Mark_recfix(f, 1, LLT_GC_MARK_RECURSIVE_PPL);
-        llt_GC_Mark_recfix(f, 2, LLT_GC_MARK_RECURSIVE_PPP);
-        llt_GC_Mark_recfix(f, 3, LLT_GC_MARK_RECURSIVE_PPV);
-        return f;
+        llt_buffer *r = llt_alloc(4, llt_Fixture);
+        llt_GC_Mark_recfix(r, 0, LLT_GC_MARK_RECURSIVE_PPA);
+        llt_GC_Mark_recfix(r, 1, LLT_GC_MARK_RECURSIVE_PPL);
+        llt_GC_Mark_recfix(r, 2, LLT_GC_MARK_RECURSIVE_PPP);
+        llt_GC_Mark_recfix(r, 3, LLT_GC_MARK_RECURSIVE_PPV);
+        return r;
 }
 
 @ @<Unit test: garbage collector |mark|@>=
-llt_Fixture *
+llt_buffer *
 llt_GC_Mark__Recursive_PV (void)
 {
-        llt_Fixture *f = llt_alloc(4);
-        llt_GC_Mark_recfix(f, 0, LLT_GC_MARK_RECURSIVE_PVA);
-        llt_GC_Mark_recfix(f, 1, LLT_GC_MARK_RECURSIVE_PVL);
-        llt_GC_Mark_recfix(f, 2, LLT_GC_MARK_RECURSIVE_PVP);
-        llt_GC_Mark_recfix(f, 3, LLT_GC_MARK_RECURSIVE_PVV);
-        return f;
+        llt_buffer *r = llt_alloc(4, llt_Fixture);
+        llt_GC_Mark_recfix(r, 0, LLT_GC_MARK_RECURSIVE_PVA);
+        llt_GC_Mark_recfix(r, 1, LLT_GC_MARK_RECURSIVE_PVL);
+        llt_GC_Mark_recfix(r, 2, LLT_GC_MARK_RECURSIVE_PVP);
+        llt_GC_Mark_recfix(r, 3, LLT_GC_MARK_RECURSIVE_PVV);
+        return r;
 }
 
 @ @<Unit test: garbage collector |mark|@>=
-llt_Fixture *
+llt_buffer *
 llt_GC_Mark__Recursive_VP (void)
 {
-        llt_Fixture *f = llt_alloc(4);
-        llt_GC_Mark_recfix(f, 0, LLT_GC_MARK_RECURSIVE_VPA);
-        llt_GC_Mark_recfix(f, 1, LLT_GC_MARK_RECURSIVE_VPL);
-        llt_GC_Mark_recfix(f, 2, LLT_GC_MARK_RECURSIVE_VPP);
-        llt_GC_Mark_recfix(f, 3, LLT_GC_MARK_RECURSIVE_VPV);
-        return f;
+        llt_buffer *r = llt_alloc(4, llt_Fixture);
+        llt_GC_Mark_recfix(r, 0, LLT_GC_MARK_RECURSIVE_VPA);
+        llt_GC_Mark_recfix(r, 1, LLT_GC_MARK_RECURSIVE_VPL);
+        llt_GC_Mark_recfix(r, 2, LLT_GC_MARK_RECURSIVE_VPP);
+        llt_GC_Mark_recfix(r, 3, LLT_GC_MARK_RECURSIVE_VPV);
+        return r;
 }
 
 @ @<Unit test: garbage collector |mark|@>=
-llt_Fixture *
+llt_buffer *
 llt_GC_Mark__Recursive_VV (void)
 {
-        llt_Fixture *f = llt_alloc(4);
-        llt_GC_Mark_recfix(f, 0, LLT_GC_MARK_RECURSIVE_VVA);
-        llt_GC_Mark_recfix(f, 1, LLT_GC_MARK_RECURSIVE_VVL);
-        llt_GC_Mark_recfix(f, 2, LLT_GC_MARK_RECURSIVE_VVP);
-        llt_GC_Mark_recfix(f, 3, LLT_GC_MARK_RECURSIVE_VVV);
-        return f;
+        llt_buffer *r = llt_alloc(4, llt_Fixture);
+        llt_GC_Mark_recfix(r, 0, LLT_GC_MARK_RECURSIVE_VVA);
+        llt_GC_Mark_recfix(r, 1, LLT_GC_MARK_RECURSIVE_VVL);
+        llt_GC_Mark_recfix(r, 2, LLT_GC_MARK_RECURSIVE_VVP);
+        llt_GC_Mark_recfix(r, 3, LLT_GC_MARK_RECURSIVE_VVV);
+        return r;
 }
 
-@*2 Sweep.
+@*1 Sweep.
 
 \point 1. {\it What is the contract fulfilled by the code under test?}
 
@@ -6220,7 +6220,7 @@ struct llt_Fixture {
         LLT_FIXTURE_HEADER;
         boolean preinit_p;
         cell safe;
-        cell *safe_buf;
+        llt_buffer *safe_buf;
         size_t expect;
         int ret_val;
 };
@@ -6272,7 +6272,7 @@ llt_GC_Sweep_prepare (llt_Fixture *fix)
 
 @<Unit test: garbage collector |sweep|@>=
 void
-llt_GC_Sweep_destroy (llt_Fixture *fix __unused)
+llt_GC_Sweep_destroy (llt_Fixture *fix)
 {
         free(fix->safe_buf);
         vm_init_imp();
@@ -6303,45 +6303,48 @@ llt_GC_Sweep_test (llt_Fixture *fix)
         @#
         mark_ok_p = btrue;
         for (i = 0; i < (int) fix->expect; i++)
-                if (mark_p(fix->safe_buf[i]))@/
+                if (mark_p(((cell *) fix->safe_buf->data)[i]))@/
                         mark_ok_p = bfalse;
         tap_more(ok, mark_ok_p, fpmsgf("the cells are unmarked"));
         @#
         free_ok_p = btrue;
         for (f = Cells_Free; !null_p(f); f = cdr(f))
                 for (i = 0; i < (int) fix->expect; i++)
-                        if (fix->safe_buf[i] == f)@/
+                        if (((cell *) fix->safe_buf->data)[i] == f)@/
                                 free_ok_p = bfalse;
-        tap_more(ok, mark_ok_p, fpmsgf("the used cells are not in the free list"));
+        tap_more(ok, mark_ok_p,
+                fpmsgf("the used cells are not in the free list"));
         @#
         return ok;
 }
 
 @ @<Unit test: garbage collector |sweep|@>=
-llt_Fixture *
+void
 llt_GC_Sweep_fix (llt_Fixture *fix,
                   const char *name)
 {
-        fix->name = name;
+        fix->name = (char *) name;
         fix->prepare = llt_GC_Sweep_prepare;
         fix->destroy = llt_GC_Sweep_destroy;
         fix->act = llt_GC_Sweep_act;
         fix->test = llt_GC_Sweep_test;
         fix->skip_gc_p = btrue;
-        return fix;
 }
 
 @ @<Unit test: garbage collector |sweep|@>=
-llt_Fixture *
+llt_buffer *
 llt_GC_Sweep__Empty_Pool (void)
 {
-        llt_Fixture *f = llt_alloc(2);
-        llt_GC_Sweep_fix(f + 0, __func__);
-        llt_GC_Sweep_fix(f + 1, __func__);
-        f[0].preinit_p = btrue;
-        f[0].suffix = "no pool";
-        f[1].suffix = "unused";
-        return f;
+        llt_buffer *r;
+        llt_Fixture *fix;
+        r = llt_alloc(2, llt_Fixture);
+        fix = (llt_Fixture *) r->data;
+        llt_GC_Sweep_fix(fix + 0, __func__);
+        llt_GC_Sweep_fix(fix + 1, __func__);
+        fix[0].preinit_p = btrue;
+        fix[0].suffix = "no pool";
+        fix[1].suffix = "unused";
+        return r;
 }
 
 @ References to the cells which make up the object are saved in
@@ -6354,23 +6357,22 @@ llt_GC_Sweep__Used_Pool_prepare (llt_Fixture *fix)
         fix->safe = cons(VOID, UNDEFINED);
         vms_push(fix->safe);
         fix->expect = llt_GC_Sweep_mark_m(vms_ref());
-        ERR_OOM_P(fix->safe_buf = malloc(fix->expect));
-        object_copyref(fix->safe, fix->safe_buf);
+        fix->safe_buf = llt_copy_refs(fix->safe);
         llt_GC_Sweep_prepare(fix);
         vms_pop();
 }
 
 @ @<Unit test: garbage collector |sweep|@>=
-llt_Fixture *
+llt_buffer *
 llt_GC_Sweep__Used_Pool (void)
 {
-        llt_Fixture *f = llt_alloc(1);
-        llt_GC_Sweep_fix(f + 0, __func__);
-        f[0].prepare = llt_GC_Sweep__Used_Pool_prepare;
-        return f;
+        llt_buffer *r = llt_alloc(1, llt_Fixture);
+        llt_GC_Sweep_fix((llt_Fixture *) r->data, __func__);
+        ((llt_Fixture *) r->data)->prepare = llt_GC_Sweep__Used_Pool_prepare;
+        return r;
 }
 
-@*2 Vectors.
+@*1 Vectors.
 
 \point 1. {\it What is the contract fulfilled by the code under test?}
 
@@ -6422,16 +6424,13 @@ various arrangements.
 
 struct llt_Fixture {
         LLT_FIXTURE_HEADER;
-        const char *pattern;
+        char *pattern;
         int ret_val;
-        size_t safe_bufsize;
         size_t safe_size;
-        cell *cell_buf;
-        cell *offset_buf;
-        char *safe_buf;
-        size_t *size_buf;
-        size_t unsafe_bufsize;
-        cell *unsafe_buf;
+        llt_buffer *cell_buf; /* refs of live vectors */
+        llt_buffer *offset_buf; /* original live offsets */
+        llt_buffer *safe_buf; /* serialised live vectors */
+        llt_buffer *unsafe_buf; /* refs of unsafe vectors */
 };
 
 @<Unit test body@>@;
@@ -6468,6 +6467,8 @@ llt_GC_Vector_prepare (llt_Fixture *fix)
         int i, n, z;
         if (!fix->pattern)
                 fix->pattern = "L";
+        fix->cell_buf = llt_alloc(0, cell);
+        fix->offset_buf = llt_alloc(0, cell);
         g = NIL;
         n = SCHAR_MAX;
         s = LLT_GC_VECTOR__SIZE;
@@ -6518,41 +6519,35 @@ to collect so it's saved into |fix->offset_buf| instead and the
 live |vector|s are serialised without recording it.
 
 @<Unit test part: serialise a live |vector| into the fixture@>=
-fix->safe_size++;
-fix->cell_buf = reallocarray(fix->cell_buf,
-        fix->safe_size, sizeof (cell));
-fix->offset_buf = reallocarray(fix->offset_buf,
-        fix->safe_size, sizeof (cell));
-fix->size_buf = reallocarray(fix->size_buf,
-        fix->safe_size, sizeof (size_t));
-fix->cell_buf[fix->safe_size - 1] = v;
-fix->offset_buf[fix->safe_size - 1] = vector_offset(v);
-fix->safe_bufsize +=
-        fix->size_buf[fix->safe_size - 1] = object_sizeof(v);
+n = fix->cell_buf->len;
+llt_grow_by(fix->cell_buf, 1);
+llt_grow_by(fix->offset_buf, 1);
+((cell *) fix->cell_buf->data)[n] = v;
+((cell *) fix->offset_buf->data)[n] = vector_offset(v);
 
 @ The list of live objects saved in |VMS| is reversed so that the
 order matches that in |fix->pattern| then they are serialised
 sequentially into |fix->safe_buf|.
 
 @<Unit test part: complete live |vector| serialisation@>=
-fix->safe_buf = calloc(fix->safe_bufsize, sizeof (char));
+fix->safe_buf = llt_alloc(0, llt_buffer *);
 VMS = list_reverse_m(VMS, btrue);
 n = 0;
-for (v = VMS; !null_p(v); v = cdr(v))@/
-        n += object_copy(car(v), fix->safe_buf + n, bfalse);
+for (v = VMS; !null_p(v); v = cdr(v), n++) {
+        llt_grow_by(fix->safe_buf, 1);
+        ((llt_buffer **) fix->safe_buf->data)[n]
+                = llt_serialise(car(v), bfalse);
+}
 
 @ Unused objects don't need to be serialised; their cell references
 only are saved to verify that they have been returned to the free
 list.
 
 @<Unit test part: save unused |vector| references@>=
-fix->unsafe_bufsize = 0;
+fix->unsafe_buf = llt_alloc(0, cell);
+n = 0;
 for (v = CTS; !null_p(v); v = cdr(v))@/
-        fix->unsafe_bufsize += object_sizeofref(car(v));
-fix->unsafe_buf = calloc(fix->unsafe_bufsize, sizeof (cell));
-i = 0;
-for (v = CTS; !null_p(v); v = cdr(v))@/
-        i += object_copyref(car(v), fix->unsafe_buf + i);
+        llt_extend_serial(fix->unsafe_buf, llt_copy_refs(car(v)), n);
 
 @ @<Unit test: garbage collector |gc_vector|@>=
 boolean
@@ -6560,12 +6555,12 @@ llt_GC_Vector_test (llt_Fixture *fix)
 {
         char buf[TEST_BUFSIZE], *p, *s;
         boolean ok, liveok, freeok, tagok, *freelist;
-        int delta, live, serial, unused, f, i;
+        int delta, live, unused, f, i;
         cell j;
         freelist = calloc(Cells_Poolsize, sizeof (boolean));
         for (j = Cells_Free; !null_p(j); j = cdr(j))
                 freelist[j] = btrue;
-        delta = live = serial = unused = 0;
+        delta = live = unused = 0;
         s = LLT_GC_VECTOR__SIZE;
         ok = btrue;
         for (i = 0, p = (char *) fix->pattern; *p; i++, p++) {
@@ -6578,24 +6573,25 @@ llt_GC_Vector_test (llt_Fixture *fix)
                 }
                 s++;
         }
+        free (freelist);
         return ok;
 }
 
 @ @<Unit test part: test a live |vector|@>=
-liveok = object_compare(fix->safe_buf + serial, fix->size_buf[live],
-        fix->cell_buf[live], bfalse);
+liveok = llt_compare_serial(((llt_buffer **) fix->safe_buf->data)[live],
+        ((cell *) fix->cell_buf->data)[live], bfalse);
 tap_more(ok, liveok, fpmsgf("(L-%d) object is unchanged", live));
-liveok = vector_offset(fix->cell_buf[live]) == fix->offset_buf[live] - delta;
+liveok = vector_offset(((cell *) fix->cell_buf->data)[live])
+        == ((cell *) fix->offset_buf->data)[live] - delta;
 tap_more(ok, liveok, fpmsgf("(L-%d), object is defragmented", live));
-serial += fix->size_buf[live];
 live++;
 
 @ @<Unit test part: test an unused |vector|@>=
 f = *s - '0';
 delta += f ? vector_realsize(f) : 0;
 tagok = freeok = btrue;
-for (i = 0; i < (int) fix->unsafe_bufsize; i++) {
-        j = fix->unsafe_buf[i];
+for (i = 0; i < (int) fix->unsafe_buf->len; i++) {
+        j = ((cell *) fix->unsafe_buf->data)[i];
         if (special_p(j) || symbol_p(j) || smallint_p(j))
                 continue;
         tagok = (tag(j) == TAG_NONE) && tagok;
@@ -6612,7 +6608,6 @@ llt_GC_Vector_destroy (llt_Fixture *fix)
         free(fix->cell_buf);
         free(fix->offset_buf);
         free(fix->safe_buf);
-        free(fix->size_buf);
         free(fix->unsafe_buf);
         vm_init_imp();
 }
@@ -6625,23 +6620,22 @@ llt_GC_Vector_act (llt_Fixture *fix)
 }
 
 @ @<Unit test: garbage collector |gc_vector|@>=
-llt_Fixture *
+void
 llt_GC_Vector_fix (llt_Fixture *fix,
                    const char *name)
 {
-        fix->name = name;
+        fix->name = (char *) name;
         fix->prepare = llt_GC_Vector_prepare;
         fix->destroy = llt_GC_Vector_destroy;
         fix->act = llt_GC_Vector_act;
         fix->test = llt_GC_Vector_test;
-        return fix;
 }
 
 @ The tests themselves are then defined with a list of combinations
 of \.{L} \AM\ \.{U} that are built into the fixtures.
 
 @<Unit test: garbage collector |gc_vector|@>=
-llt_Fixture *
+llt_buffer *
 llt_GC_Vector__All (void)
 {
         static char *test_patterns[] = {
@@ -6668,20 +6662,20 @@ llt_GC_Vector__All (void)
                 "UUULLLUUULLLUUU",
                 NULL
         };
-        char **p;
+        llt_buffer *r = NULL;
         llt_Fixture *f;
-        int c, i;
-        for (c = 0, p = test_patterns; *p; c++, p++)
-                ;
-        f = llt_alloc(c);
-        for (i = 0; i < c; i++) {
-                llt_GC_Vector_fix(f + i, __func__);
-                f[i].suffix = f[i].pattern = test_patterns[i];
+        char **p;
+        int i;
+        for (p = test_patterns, i = 0; *p; p++, i++) {
+                llt_fix_append(r, 1);
+                f = ((llt_Fixture *) r->data) + r->len - 1;
+                llt_GC_Vector_fix(f, __func__);
+                f->suffix = f->pattern = test_patterns[i];
         }
-        return f;
+        return r;
 }
 
-@*1 Objects.
+@* Objects.
 
 @d LLT_TEST_VARIABLE "test-variable"
 @d LLT_VALUE_MARCO "marco?"
@@ -6689,9 +6683,9 @@ llt_GC_Vector__All (void)
 @d LLT_VALUE_FISH "fish..."
 @c
 
-@*2 Closures.
+@*1 Closures.
 
-@*2 Environments.
+@*1 Environments.
 
 Broadly speaking there are three activities that can be performed
 on an |environment| which need to be tested: searching, setting and
@@ -6711,7 +6705,7 @@ struct llt_Fixture {
         int       null_pos;   /* where to put a |NIL| in |formals| */
         boolean   proper_p;   /* create a proper list? */
         cell      ret_val;    /* returned value */
-        llt_copy *save_Env;   /* dump of |Env| */
+        llt_buffer *save_Env; /* dump of |Env| */
         jmp_buf   save_goto;  /* copy |Goto_Error| to restore */
         int       save_RTSp;  /* |RTSp| prior to action */
         cell    (*search_fn) (cell, cell);
@@ -6766,7 +6760,7 @@ if (fix->layers > 2)
 for (i = 0; i < fix->layers; i++)
         if (!null_p(fix->layer[i]))
                 env_set(e[i], fix->sym_mpf[0], fix->layer[i], btrue);
-fix->save_Env = llt_copy_object(Env, btrue);
+fix->save_Env = llt_serialise(Env, btrue);
 fix->save_RTSp = RTSp;
 for (i = 0; i < 3; i++) {
         snprintf(buf, TEST_BUFSIZE, "test-variable-%d", i + 1);
@@ -6800,7 +6794,7 @@ for (i = fix->stack - 1; i > 0; i--) {
 void
 llt_Environments_destroy (llt_Fixture *fix __unused)
 {
-        Env = fix->save_Env->origin;
+        Env = ((cell *) fix->save_Env->data)[0];
         Acc = VMS = NIL;
         free(fix->save_Env);
         bcopy(fix->save_goto, Goto_Error, sizeof (jmp_buf));
@@ -6810,16 +6804,15 @@ llt_Environments_destroy (llt_Fixture *fix __unused)
 @ There is no default action or test procedures for these units.
 
 @<Unit test: environment objects@>=
-llt_Fixture *
+void
 llt_Environments_fix (llt_Fixture *fix,
                       const char *name)
 {
-        fix->name = name;
+        fix->name = (char *) name;
         fix->prepare = llt_Environments_prepare;
         fix->destroy = llt_Environments_destroy;
         fix->act = NULL;
         fix->test = NULL;
-        return fix;
 }
 
 @ Searching the environment results in a variable being found and
@@ -6868,99 +6861,108 @@ llt_Environments__Search_test (llt_Fixture *fix)
 @ Search a single layer, with and without the variable present.
 
 @<Unit test: environment objects@>=
-llt_Fixture *
+llt_buffer *
 llt_Environments__Search_Single_Layer (void)
 {
         int i;
-        llt_Fixture *f = llt_alloc(4);
+        llt_buffer *r;
+        llt_Fixture *fix;
+        r = llt_alloc(4, llt_Fixture);
+        fix = (llt_Fixture *) r->data;
         for (i = 0; i < 4; i++) {
-                llt_Environments_fix(f + i, __func__);
-                f[i].act = llt_Environments__Search_act;
-                f[i].test = llt_Environments__Search_test;
-                f[i].layers = 1;
+                llt_Environments_fix(fix + i, __func__);
+                fix[i].act = llt_Environments__Search_act;
+                fix[i].test = llt_Environments__Search_test;
+                fix[i].layers = 1;
         }
         for (i = 0; i < 4; i += 2) {
-                f[i].search_fn = env_search;
-                f[i + 1].search_fn = env_here;
+                fix[i].search_fn = env_search;
+                fix[i + 1].search_fn = env_here;
         }
-        f[0].suffix = "env_search: not present";
-        f[1].suffix = "env_here: not present";
-        f[0].layer[0] = f[1].layer[0] = NIL;
-        f[0].expect = f[1].expect = FALSE;
-        f[2].suffix = "env_search: present";
-        f[3].suffix = "env_here: present";
-        f[2].layer[0] = f[3].layer[0] = sym(LLT_VALUE_POLO);
-        f[2].expect = f[3].expect = TRUE;
-        return f;
+        fix[0].suffix = "env_search: not present";
+        fix[1].suffix = "env_here: not present";
+        fix[0].layer[0] = fix[1].layer[0] = NIL;
+        fix[0].expect = fix[1].expect = FALSE;
+        fix[2].suffix = "env_search: present";
+        fix[3].suffix = "env_here: present";
+        fix[2].layer[0] = fix[3].layer[0] = sym(LLT_VALUE_POLO);
+        fix[2].expect = fix[3].expect = TRUE;
+        return r;
 }
 
 @ Search a multi-layered |environment| with the variable present
 at the top, in the parent and not present at all.
 
 @<Unit test: environment objects@>=
-llt_Fixture *
+llt_buffer *
 llt_Environments__Search_Multi_Simple (void)
 {
         int i;
-        llt_Fixture *f = llt_alloc(6);
+        llt_buffer *r;
+        llt_Fixture *fix;
+        r = llt_alloc(6, llt_Fixture);
+        fix = (llt_Fixture *) r->data;
         for (i = 0; i < 6; i++) {
-                llt_Environments_fix(f + i, __func__);
-                f[i].act = llt_Environments__Search_act;
-                f[i].test = llt_Environments__Search_test;
-                f[i].layers = 3;
-                f[i].layer[0] = f[i].layer[1] = f[i].layer[2] = NIL;
+                llt_Environments_fix(fix + i, __func__);
+                fix[i].act = llt_Environments__Search_act;
+                fix[i].test = llt_Environments__Search_test;
+                fix[i].layers = 3;
+                fix[i].layer[0] = fix[i].layer[1] = fix[i].layer[2] = NIL;
         }
         for (i = 0; i < 6; i += 2) {
-                f[i].search_fn = env_search;
-                f[i + 1].search_fn = env_here;
+                fix[i].search_fn = env_search;
+                fix[i + 1].search_fn = env_here;
         }
-        f[0].suffix = "env_search: present in top";
-        f[1].suffix = "env_here: present in top";
-        f[0].expect = f[1].expect = TRUE;
-        f[0].layer[2] = f[1].layer[2] = sym(LLT_VALUE_POLO);
-        f[2].suffix = "env_search: present in parent";
-        f[3].suffix = "env_here: present in parent";
-        f[2].expect = TRUE;
-        f[3].expect = FALSE;
-        f[2].layer[1] = f[3].layer[1] = sym(LLT_VALUE_POLO);
-        f[4].suffix = "env_search: not present";
-        f[5].suffix = "env_here: not present";
-        f[4].expect = f[5].expect = FALSE;
-        return f;
+        fix[0].suffix = "env_search: present in top";
+        fix[1].suffix = "env_here: present in top";
+        fix[0].expect = fix[1].expect = TRUE;
+        fix[0].layer[2] = fix[1].layer[2] = sym(LLT_VALUE_POLO);
+        fix[2].suffix = "env_search: present in parent";
+        fix[3].suffix = "env_here: present in parent";
+        fix[2].expect = TRUE;
+        fix[3].expect = FALSE;
+        fix[2].layer[1] = fix[3].layer[1] = sym(LLT_VALUE_POLO);
+        fix[4].suffix = "env_search: not present";
+        fix[5].suffix = "env_here: not present";
+        fix[4].expect = fix[5].expect = FALSE;
+        return r;
 }
 
 @ Search a multi-layered |environment| with the variable present
 in the top layer {\it and} parent, and the parent and its parent.
 
 @<Unit test: environment objects@>=
-llt_Fixture *
+llt_buffer *
 llt_Environments__Search_Multi_Masked (void)
 {
         int i;
-        llt_Fixture *f = llt_alloc(4);
+        llt_buffer *r;
+        llt_Fixture *fix;
+        r = llt_alloc(4, llt_Fixture);
+        fix = (llt_Fixture *) r->data;
         for (i = 0; i < 4; i++) {
-                llt_Environments_fix(f + i, __func__);
-                f[i].act = llt_Environments__Search_act;
-                f[i].test = llt_Environments__Search_test;
-                f[i].layers = 3;
-                f[i].layer[0] = f[i].layer[1] = f[i].layer[2] = NIL;
+                llt_Environments_fix(fix + i, __func__);
+                fix[i].act = llt_Environments__Search_act;
+                fix[i].test = llt_Environments__Search_test;
+                fix[i].layers = 3;
+                fix[i].layer[0] = fix[i].layer[1] = fix[i].layer[2] = NIL;
         }
         for (i = 0; i < 4; i += 2) {
-                f[i].search_fn = env_search;
-                f[i + 1].search_fn = env_here;
+                fix[i].search_fn = env_search;
+                fix[i + 1].search_fn = env_here;
         }
-        f[0].suffix = "env_search: present in top, conflict in parent";
-        f[1].suffix = "env_here: present in top, conflict in parent";
-        f[0].expect = f[1].expect = TRUE;
-        f[0].layer[2] = f[1].layer[2] = sym(LLT_VALUE_POLO);
-        f[0].layer[1] = f[1].layer[1] = sym(LLT_VALUE_FISH);
-        f[2].suffix = "env_search: present in parent, conflict in ancestor";
-        f[3].suffix = "env_here: present in parent, conflict in ancestor";
-        f[2].expect = TRUE;
-        f[3].expect = FALSE;
-        f[2].layer[1] = f[3].layer[1] = sym(LLT_VALUE_POLO);
-        f[2].layer[0] = f[3].layer[0] = sym(LLT_VALUE_FISH);
-        return f;
+        fix[0].suffix = "env_search: present in top, conflict in parent";
+        fix[1].suffix = "env_here: present in top, conflict in parent";
+        fix[0].expect = fix[1].expect = TRUE;
+        fix[0].layer[2] = fix[1].layer[2] = sym(LLT_VALUE_POLO);
+        fix[0].layer[1] = fix[1].layer[1] = sym(LLT_VALUE_FISH);
+        fix[2].suffix = "env_search: present in parent, conflict in ancestor";
+        fix[3].suffix = "env_here: present in parent, conflict in ancestor";
+        fix[2].expect = TRUE;
+        fix[3].expect = FALSE;
+        fix[2].layer[1] = fix[3].layer[1] = sym(LLT_VALUE_POLO);
+        fix[2].layer[0] = fix[3].layer[0] = sym(LLT_VALUE_FISH);
+        return r;
 }
 
 @ Setting a variable in an |environment| is really two mostly
@@ -7022,40 +7024,43 @@ is already present, the variable is present in an ancestor, and the
 variable is not present.
 
 @<Unit test: environment objects@>=
-llt_Fixture *
+llt_buffer *
 llt_Environments__Set (void)
 {
         int i;
-        llt_Fixture *f = llt_alloc(6);
+        llt_buffer *r;
+        llt_Fixture *fix;
+        r = llt_alloc(6, llt_Fixture);
+        fix = (llt_Fixture *) r->data;
         for (i = 0; i < 6; i++) {
-                llt_Environments_fix(f + i, __func__);
-                f[i].act = llt_Environments__Set_act;
-                f[i].test = llt_Environments__Set_test;
-                f[i].layers = 2;
-                f[i].new_p = !(i % 2);
+                llt_Environments_fix(fix + i, __func__);
+                fix[i].act = llt_Environments__Set_act;
+                fix[i].test = llt_Environments__Set_test;
+                fix[i].layers = 2;
+                fix[i].new_p = !(i % 2);
         }
-        f[0].suffix = "define: already present";
-        f[1].suffix = "set: already present";
-        f[0].layer[1] = f[1].layer[1] = sym(LLT_VALUE_FISH);
-        f[0].layer[0] = f[1].layer[0] = NIL;
-        f[0].want_ex_p = btrue;
-        f[0].expect = sym(LLT_VALUE_FISH);
-        f[1].expect = sym(LLT_VALUE_POLO);
-        f[2].suffix = "define: in an ancestor";
-        f[3].suffix = "set: in an ancestor";
-        f[2].layer[1] = f[3].layer[1] = NIL;
-        f[2].layer[0] = f[3].layer[0] = sym(LLT_VALUE_FISH);
-        f[2].expect = sym(LLT_VALUE_POLO);
-        f[3].want_ex_p = btrue;
-        f[3].expect = sym(LLT_VALUE_FISH);
-        f[4].suffix = "define: not in the environment";
-        f[5].suffix = "set: not in the environment";
-        f[4].layer[1] = f[5].layer[1] = NIL;
-        f[4].layer[0] = f[5].layer[0] = NIL;
-        f[4].expect = sym(LLT_VALUE_POLO);
-        f[5].want_ex_p = btrue;
-        f[5].expect = UNDEFINED;
-        return f;
+        fix[0].suffix = "define: already present";
+        fix[1].suffix = "set: already present";
+        fix[0].layer[1] = fix[1].layer[1] = sym(LLT_VALUE_FISH);
+        fix[0].layer[0] = fix[1].layer[0] = NIL;
+        fix[0].want_ex_p = btrue;
+        fix[0].expect = sym(LLT_VALUE_FISH);
+        fix[1].expect = sym(LLT_VALUE_POLO);
+        fix[2].suffix = "define: in an ancestor";
+        fix[3].suffix = "set: in an ancestor";
+        fix[2].layer[1] = fix[3].layer[1] = NIL;
+        fix[2].layer[0] = fix[3].layer[0] = sym(LLT_VALUE_FISH);
+        fix[2].expect = sym(LLT_VALUE_POLO);
+        fix[3].want_ex_p = btrue;
+        fix[3].expect = sym(LLT_VALUE_FISH);
+        fix[4].suffix = "define: not in the environment";
+        fix[5].suffix = "set: not in the environment";
+        fix[4].layer[1] = fix[5].layer[1] = NIL;
+        fix[4].layer[0] = fix[5].layer[0] = NIL;
+        fix[4].expect = sym(LLT_VALUE_POLO);
+        fix[5].want_ex_p = btrue;
+        fix[5].expect = UNDEFINED;
+        return r;
 }
 
 @ Lifting stack items into an environment has many moving parts so
@@ -7117,7 +7122,7 @@ llt_Environments__Lift_Stack_test (llt_Fixture *fix)
                 fpmsgf("the return value is an environment"));
         tap_again(ok, env_parent(fix->ret_val) == Env,
                 fpmsgf("the correct environment is extended"));
-        tap_more(ok, object_compare(fix->save_Env->buf, fix->save_Env->size, Env, btrue),
+        tap_more(ok, llt_compare_serial(fix->save_Env, Env, btrue),
                 fpmsgf("the parent environment is unchanged"));
         tap_more(ok, RTSp == fix->save_RTSp,
                 fpmsgf("the stack is reset"));
@@ -7148,62 +7153,65 @@ llt_Environments__Lift_Stack_test (llt_Fixture *fix)
 }
 
 @ @<Unit test: environment objects@>=
-llt_Fixture *
+llt_buffer *
 llt_Environments__Lift_Stack (void)
 {
         int i;
-        llt_Fixture *f = llt_alloc(11);
+        llt_buffer *r;
+        llt_Fixture *fix;
+        r = llt_alloc(11, llt_Fixture);
+        fix = (llt_Fixture *) r->data;
         for (i = 0; i < 11; i++) {
-                llt_Environments_fix(f + i, __func__);
-                f[i].act = llt_Environments__Lift_Stack_act;
-                f[i].test = llt_Environments__Lift_Stack_test;
-                f[i].layers = 1;
-                f[i].layer[0] = NIL;
-                f[i].proper_p = btrue;
-                f[i].formals = NIL;
+                llt_Environments_fix(fix + i, __func__);
+                fix[i].act = llt_Environments__Lift_Stack_act;
+                fix[i].test = llt_Environments__Lift_Stack_test;
+                fix[i].layers = 1;
+                fix[i].layer[0] = NIL;
+                fix[i].proper_p = btrue;
+                fix[i].formals = NIL;
         }
-        f[i=0].suffix = "NIL";
-        f[++i].suffix = "symbol";
-        f[  i].stack = 1;
-        f[  i].proper_p = bfalse;
-        f[++i].suffix = "pair of two symbols";
-        f[  i].stack = 2;
-        f[  i].proper_p = bfalse;
-        f[++i].suffix = "improper list of symbols";
-        f[  i].stack = 3;
-        f[  i].proper_p = bfalse;
-        f[++i].suffix = "list of NIL";
-        f[  i].stack = 1;
-        f[  i].null_pos = 1;
-        f[++i].suffix = "list of 1 symbol";
-        f[  i].stack = 1;
-        f[++i].suffix = "list of 2 symbols";
-        f[  i].stack = 2;
-        f[++i].suffix = "list of 2 with NIL first";
-        f[  i].stack = 2;
-        f[  i].null_pos = 1;
-        f[++i].suffix = "list of 2 with NIL last";
-        f[  i].stack = 2;
-        f[  i].null_pos = 2;
-        f[++i].suffix = "list of 3 symbols";
-        f[  i].stack = 3;
-        f[++i].suffix = "list of 3 with a NIL";
-        f[  i].stack = 3;
-        f[  i].null_pos = 2;
-        return f;
+        fix[i=0].suffix = "NIL";
+        fix[++i].suffix = "symbol";
+        fix[  i].stack = 1;
+        fix[  i].proper_p = bfalse;
+        fix[++i].suffix = "pair of two symbols";
+        fix[  i].stack = 2;
+        fix[  i].proper_p = bfalse;
+        fix[++i].suffix = "improper list of symbols";
+        fix[  i].stack = 3;
+        fix[  i].proper_p = bfalse;
+        fix[++i].suffix = "list of NIL";
+        fix[  i].stack = 1;
+        fix[  i].null_pos = 1;
+        fix[++i].suffix = "list of 1 symbol";
+        fix[  i].stack = 1;
+        fix[++i].suffix = "list of 2 symbols";
+        fix[  i].stack = 2;
+        fix[++i].suffix = "list of 2 with NIL first";
+        fix[  i].stack = 2;
+        fix[  i].null_pos = 1;
+        fix[++i].suffix = "list of 2 with NIL last";
+        fix[  i].stack = 2;
+        fix[  i].null_pos = 2;
+        fix[++i].suffix = "list of 3 symbols";
+        fix[  i].stack = 3;
+        fix[++i].suffix = "list of 3 with a NIL";
+        fix[  i].stack = 3;
+        fix[  i].null_pos = 2;
+        return r;
 }
 
-@*2 Frames.
+@*1 Frames.
 
-@*2 Lists \AM\ Pairs.
+@*1 Lists \AM\ Pairs.
 
-@*2 Numbers.
+@*1 Numbers.
 
-@*2 Symbols.
+@*1 Symbols.
 
-@*2 Vectors.
+@*1 Vectors.
 
-@*1 Interpreter.
+@* Interpreter.
 
 @(t/interpreter.c@>=
 @<Unit test header@>@;
@@ -7270,12 +7278,12 @@ in |VMS|, not a copy.
 
 @<Unit test part: interpreter fixture state backup@>=
 cell      backup_Env;
-llt_copy *save_Acc;
-llt_copy *save_Env;
-llt_copy *save_Prog;
-llt_copy *save_RTS;
-llt_copy *save_Root;
-llt_copy *save_VMS;
+llt_buffer *save_Acc;
+llt_buffer *save_Env;
+llt_buffer *save_Prog;
+llt_buffer *save_RTS;
+llt_buffer *save_Root;
+llt_buffer *save_VMS;
 int       save_Fp;
 jmp_buf   save_goto;
 int       save_Ip;
@@ -7300,17 +7308,17 @@ llt_Interpreter_prepare (llt_Fixture *fix)
                 Ip = 0;
         }
         if (!fix->mutate_Acc_p)
-                fix->save_Acc = llt_copy_object(Acc, bfalse);
+                fix->save_Acc = llt_serialise(Acc, bfalse);
         if (!fix->mutate_Prog_p)
-                fix->save_Prog = llt_copy_object(Prog, bfalse);
+                fix->save_Prog = llt_serialise(Prog, bfalse);
         if (!fix->mutate_Env_p)
-                fix->save_Env = llt_copy_object(Env, bfalse);
+                fix->save_Env = llt_serialise(Env, bfalse);
         if (!fix->mutate_Root_p)
-                fix->save_Root = llt_copy_object(Root, bfalse);
+                fix->save_Root = llt_serialise(Root, bfalse);
         if (!fix->mutate_VMS_p)
-                fix->save_VMS = llt_copy_object(VMS, bfalse);
+                fix->save_VMS = llt_serialise(VMS, bfalse);
         if (!fix->mutate_RTS_p)
-                fix->save_RTS = llt_copy_object(RTS, bfalse);
+                fix->save_RTS = llt_serialise(RTS, bfalse);
         if (!fix->mutate_Fp_p)
                 fix->save_Fp = Fp;
         if (!fix->mutate_Ip_p)
@@ -7351,8 +7359,7 @@ llt_Interpreter_act (llt_Fixture *fix __unused)
 }
 
 @ @d llt_Interpreter_test_compare(o) do {
-        boolean ok = object_compare(fix->save_##o->buf,
-                fix->save_##o->size, (o), bfalse);
+        boolean ok = llt_compare_serial(fix->save_##o, (o), bfalse);
         tap_more(all, ok, fpmsgf(#o " is unchanged"));
 } while (0)
 @<Unit test: Interpreter@>=
@@ -7401,11 +7408,11 @@ llt_Interpreter_test (llt_Fixture *fix)
 }
 
 @ @<Unit test: Interpreter@>=
-llt_Fixture *
+void
 llt_Interpreter_fix (llt_Fixture *fix,
                      const char *name)
 {
-        fix->name = name;
+        fix->name = (char *) name;
         fix->prepare = llt_Interpreter_prepare;
         fix->destroy = llt_Interpreter_destroy;
         fix->act = llt_Interpreter_act;
@@ -7413,26 +7420,25 @@ llt_Interpreter_fix (llt_Fixture *fix,
         fix->opcode = OP_NOOP;
         fix->mutate_Ip_p = btrue;
         fix->want_Ip = 1;
-        return fix;
 }
 
-@*2 |OP_APPLY|.
+@*1 |OP_APPLY|.
 
 ...
 
-@*2 |OP_APPLY_TAIL|.
+@*1 |OP_APPLY_TAIL|.
 
 ...
 
-@*2 |OP_CAR|.
+@*1 |OP_CAR|.
 
-@*2 |OP_CDR|.
+@*1 |OP_CDR|.
 
-@*2 |OP_COMPILE|.
+@*1 |OP_COMPILE|.
 
-@*2 |OP_CONS|.
+@*1 |OP_CONS|.
 
-@*2 |OP_CYCLE|.
+@*1 |OP_CYCLE|.
 
 |OP_CYCLE| swaps the top two stack elements and advances |Ip| by
 1. There must be a stack to manipulate.
@@ -7475,25 +7481,28 @@ llt_Interpreter__OP_CYCLE_test (llt_Fixture *fix)
 }
 
 @ @<Unit test: Interpreter@>=
-llt_Fixture *
+llt_buffer *
 llt_Interpreter__OP_CYCLE (void)
 {
-        llt_Fixture *f = llt_alloc(2);
-        llt_Interpreter_fix(f + 0, __func__);
-        llt_Interpreter_fix(f + 1, __func__);
-        f[0].opcode = f[1].opcode = OP_CYCLE;
-        f[0].prepare = f[1].prepare = llt_Interpreter__OP_CYCLE_prepare;
-        f[0].test = f[1].test = llt_Interpreter__OP_CYCLE_test;
-        f[0].mutate_RTS_p = f[1].mutate_RTS_p = btrue;
-        f[0].suffix = "empty stack";
-        f[1].extra_stack = 3;
-        f[1].suffix = "stack in use";
-        return f;
+        llt_buffer *r;
+        llt_Fixture *fix;
+        r = llt_alloc(2, llt_Fixture);
+        fix = (llt_Fixture *) r->data;
+        llt_Interpreter_fix(fix + 0, __func__);
+        llt_Interpreter_fix(fix + 1, __func__);
+        fix[0].opcode = fix[1].opcode = OP_CYCLE;
+        fix[0].prepare = fix[1].prepare = llt_Interpreter__OP_CYCLE_prepare;
+        fix[0].test = fix[1].test = llt_Interpreter__OP_CYCLE_test;
+        fix[0].mutate_RTS_p = fix[1].mutate_RTS_p = btrue;
+        fix[0].suffix = "empty stack";
+        fix[1].extra_stack = 3;
+        fix[1].suffix = "stack in use";
+        return r;
 }
 
-@*2 |OP_ENVIRONMENT_P|.
+@*1 |OP_ENVIRONMENT_P|.
 
-@*2 |OP_ENV_MUTATE_M|. 2 extra codes in Prog, Env to set in on stack.
+@*1 |OP_ENV_MUTATE_M|. 2 extra codes in Prog, Env to set in on stack.
 Value. Although |env_set| could fail this unit ``cannot'' so only
 two tests are needed for each boolean state of |new_p|.
 
@@ -7529,52 +7538,55 @@ llt_Interpreter__OP_ENV_MUTATE_M_test (llt_Fixture *fix)
 }
 
 @ @<Unit test: Interpreter@>=
-llt_Fixture *
+llt_buffer *
 llt_Interpreter__OP_ENV_MUTATE_M (void)
 {
-        llt_Fixture *f = llt_alloc(2);
-        llt_Interpreter_fix(f + 0, __func__);
-        llt_Interpreter_fix(f + 1, __func__);
-        f[0].custom_p = f[1].custom_p = btrue;
-        f[0].prepare = f[1].prepare
+        llt_buffer *r;
+        llt_Fixture *fix;
+        r = llt_alloc(2, llt_Fixture);
+        fix = (llt_Fixture *) r->data;
+        llt_Interpreter_fix(fix + 0, __func__);
+        llt_Interpreter_fix(fix + 1, __func__);
+        fix[0].custom_p = fix[1].custom_p = btrue;
+        fix[0].prepare = fix[1].prepare
                 = llt_Interpreter__OP_ENV_MUTATE_M_prepare;
-        f[0].test = f[1].test = llt_Interpreter__OP_ENV_MUTATE_M_test;
-        f[0].want_Ip = f[1].want_Ip = 3;
-        f[0].mutate_Acc_p = f[1].mutate_Acc_p = btrue;
-        f[0].mutate_RTS_p = f[1].mutate_RTS_p = btrue;
-        f[0].mutate_RTSp_p = f[1].mutate_RTSp_p = btrue;
-        f[0].want_RTSp = f[1].want_RTSp = -1;
-        f[0].suffix = "already bound";
-        f[0].env_new_p = FALSE;
-        f[1].suffix = "not bound";
-        f[1].env_new_p = TRUE;
-        return f;
+        fix[0].test = fix[1].test = llt_Interpreter__OP_ENV_MUTATE_M_test;
+        fix[0].want_Ip = fix[1].want_Ip = 3;
+        fix[0].mutate_Acc_p = fix[1].mutate_Acc_p = btrue;
+        fix[0].mutate_RTS_p = fix[1].mutate_RTS_p = btrue;
+        fix[0].mutate_RTSp_p = fix[1].mutate_RTSp_p = btrue;
+        fix[0].want_RTSp = fix[1].want_RTSp = -1;
+        fix[0].suffix = "already bound";
+        fix[0].env_new_p = FALSE;
+        fix[1].suffix = "not bound";
+        fix[1].env_new_p = TRUE;
+        return r;
 }
 
-@*2 |OP_ENV_QUOTE|.
+@*1 |OP_ENV_QUOTE|.
 
-@*2 |OP_ENV_ROOT|.
+@*1 |OP_ENV_ROOT|.
 
-@*2 |OP_ENV_SET_ROOT_M|.
+@*1 |OP_ENV_SET_ROOT_M|.
 
-@*2 |OP_ERROR|.
+@*1 |OP_ERROR|.
 
-@*2 |OP_HALT|.
+@*1 |OP_HALT|.
 
 The only thing |OP_HALT| does is lower the |Running| flag to halt the VM.
 
 @<Unit test: Interpreter@>=
-llt_Fixture *
+llt_buffer *
 llt_Interpreter__OP_HALT (void)
 {
-        llt_Fixture *f = llt_alloc(1);
-        llt_Interpreter_fix(f, __func__);
-        f->opcode = OP_HALT;
-        f->mutate_Ip_p = bfalse;
-        return f;
+        llt_buffer *r = llt_alloc(1, llt_Fixture);
+        llt_Interpreter_fix((llt_Fixture *) r->data, __func__);
+        ((llt_Fixture *) r->data)->opcode = OP_HALT;
+        ((llt_Fixture *) r->data)->mutate_Ip_p = bfalse;
+        return r;
 }
 
-@*2 |OP_JUMP|. There is not much to test for |OP_JUMP|.
+@*1 |OP_JUMP|. There is not much to test for |OP_JUMP|.
 
 @<Unit test: Interpreter@>=
 void
@@ -7588,18 +7600,18 @@ llt_Interpreter__OP_JUMP_prepare (llt_Fixture *fix)
 }
 
 @ @<Unit test: Interpreter@>=
-llt_Fixture *
+llt_buffer *
 llt_Interpreter__OP_JUMP (void)
 {
-        llt_Fixture *f = llt_alloc(1);
-        llt_Interpreter_fix(f, __func__);
-        f->prepare = llt_Interpreter__OP_JUMP_prepare;
-        f->want_Ip = 3;
-        f->custom_p = btrue;
-        return f;
+        llt_buffer *r = llt_alloc(1, llt_Fixture);
+        llt_Interpreter_fix((llt_Fixture *) r->data, __func__);
+        ((llt_Fixture *) r->data)->prepare = llt_Interpreter__OP_JUMP_prepare;
+        ((llt_Fixture *) r->data)->want_Ip = 3;
+        ((llt_Fixture *) r->data)->custom_p = btrue;
+        return r;
 }
 
-@*2 |OP_JUMP_FALSE|. Only |Ip| changes, unless |VOID| was being
+@*1 |OP_JUMP_FALSE|. Only |Ip| changes, unless |VOID| was being
 queried in which case |Ip| will be unchanged and an error raised.
 
 @<Unit test: Interpreter@>=
@@ -7630,63 +7642,69 @@ llt_Interpreter__OP_JUMP_FALSE_test (llt_Fixture *fix)
 }
 
 @ @<Unit test: Interpreter@>=
-llt_Fixture *
+llt_buffer *
 llt_Interpreter__OP_JUMP_FALSE (void)
 {
         int i;
-        llt_Fixture *f = llt_alloc(4);
+        llt_buffer *r;
+        llt_Fixture *fix;
+        r = llt_alloc(4, llt_Fixture);
+        fix = (llt_Fixture *) r->data;
         for (i = 0; i < 4; i++) {
-                llt_Interpreter_fix(f + i, __func__);
-                f[i].prepare = llt_Interpreter__OP_JUMP_FALSE_prepare;
-                f[i].test = llt_Interpreter__OP_JUMP_FALSE_test;
-                f[i].opcode = OP_JUMP_FALSE;
-                f[i].custom_p = btrue;
+                llt_Interpreter_fix(fix + i, __func__);
+                fix[i].prepare = llt_Interpreter__OP_JUMP_FALSE_prepare;
+                fix[i].test = llt_Interpreter__OP_JUMP_FALSE_test;
+                fix[i].opcode = OP_JUMP_FALSE;
+                fix[i].custom_p = btrue;
         }
-        f[0].suffix = "any";
-        f[0].set_Acc = int_new(42);
-        f[0].want_Ip = 2;
-        f[1].suffix = "#t";
-        f[1].set_Acc = TRUE;
-        f[1].want_Ip = 2;
-        f[2].suffix = "#f";
-        f[2].set_Acc = FALSE;
-        f[2].want_Ip = 3;
-        f[3].suffix = "no value";
-        f[3].set_Acc = VOID;
-        f[3].want_Ip = -1;
-        f[3].want_ex_p = btrue;
-        f[3].mutate_Acc_p = btrue;
-        return f;
+        fix[0].suffix = "any";
+        fix[0].set_Acc = int_new(42);
+        fix[0].want_Ip = 2;
+        fix[1].suffix = "#t";
+        fix[1].set_Acc = TRUE;
+        fix[1].want_Ip = 2;
+        fix[2].suffix = "#f";
+        fix[2].set_Acc = FALSE;
+        fix[2].want_Ip = 3;
+        fix[3].suffix = "no value";
+        fix[3].set_Acc = VOID;
+        fix[3].want_Ip = -1;
+        fix[3].want_ex_p = btrue;
+        fix[3].mutate_Acc_p = btrue;
+        return r;
 }
 
-@*2 |OP_JUMP_TRUE|. This test mirrors that for |OP_JUMP_FALSE|
+@*1 |OP_JUMP_TRUE|. This test mirrors that for |OP_JUMP_FALSE|
 except that the responses to |TRUE| and |FALSE| are inverted.
 
 @<Unit test: Interpreter@>=
-llt_Fixture *
+llt_buffer *
 llt_Interpreter__OP_JUMP_TRUE (void)
 {
         int i;
-        llt_Fixture *f = llt_Interpreter__OP_JUMP_FALSE();
-        for (i = 0; i < f->max; i++) {
-                f[i].name = __func__;
-                f[i].opcode = OP_JUMP_TRUE;
+        llt_buffer *r;
+        llt_Fixture *fix;
+        r = llt_Interpreter__OP_JUMP_FALSE();
+        fix = (llt_Fixture *) r->data;
+        for (i = 0; i < (int) r->len; i++) {
+                fix[i].name = (char *) __func__;
+                fix[i].opcode = OP_JUMP_TRUE;
         }
-        i = f[1].want_Ip;
-        f[1].want_Ip = f[2].want_Ip;
-        f[2].want_Ip = i;
-        return f;
+        i = fix[1].want_Ip;
+        fix[1].want_Ip = fix[2].want_Ip;
+        fix[2].want_Ip = i;
+        return r;
 }
 
-@*2 |OP_LAMBDA|.
+@*1 |OP_LAMBDA|.
 
-@*2 |OP_LIST_P|.
+@*1 |OP_LIST_P|.
 
-@*2 |OP_LIST_REVERSE|.
+@*1 |OP_LIST_REVERSE|.
 
-@*2 |OP_LIST_REVERSE_M|.
+@*1 |OP_LIST_REVERSE_M|.
 
-@*2 |OP_LOOKUP|. Assumes a symbol in Acc, looks for it recursively
+@*1 |OP_LOOKUP|. Assumes a symbol in Acc, looks for it recursively
 in Env. Value placed in Acc, or not found error.
 
 Test not found vs. found.
@@ -7729,71 +7747,74 @@ llt_Interpreter__OP_LOOKUP_test (llt_Fixture *fix)
 }
 
 @ @<Unit test: Interpreter@>=
-llt_Fixture *
+llt_buffer *
 llt_Interpreter__OP_LOOKUP (void)
 {
-        llt_Fixture *f = llt_alloc(2);
-        llt_Interpreter_fix(f + 0, __func__);
-        llt_Interpreter_fix(f + 1, __func__);
-        f[0].opcode = f[1].opcode = OP_LOOKUP;
-        f[0].prepare = f[1].prepare = llt_Interpreter__OP_LOOKUP_prepare;
-        f[0].test = f[1].test = llt_Interpreter__OP_LOOKUP_test;
-        f[0].destroy = f[1].destroy = llt_Interpreter__OP_LOOKUP_destroy;
-        f[0].mutate_RTS_p = f[1].mutate_RTS_p = btrue;
-        f[0].mutate_Acc_p = f[1].mutate_Acc_p = btrue;
-        f[0].suffix = "bound";
-        f[0].env_found_p = btrue;
-        f[1].suffix = "unbound";
-        f[1].want_ex_p = btrue;
-        f[1].want_Ip = -1;
-        return f;
+        llt_buffer *r;
+        llt_Fixture *fix;
+        r = llt_alloc(2, llt_Fixture);
+        fix = (llt_Fixture *) r->data;
+        llt_Interpreter_fix(fix + 0, __func__);
+        llt_Interpreter_fix(fix + 1, __func__);
+        fix[0].opcode = fix[1].opcode = OP_LOOKUP;
+        fix[0].prepare = fix[1].prepare = llt_Interpreter__OP_LOOKUP_prepare;
+        fix[0].test = fix[1].test = llt_Interpreter__OP_LOOKUP_test;
+        fix[0].destroy = fix[1].destroy = llt_Interpreter__OP_LOOKUP_destroy;
+        fix[0].mutate_RTS_p = fix[1].mutate_RTS_p = btrue;
+        fix[0].mutate_Acc_p = fix[1].mutate_Acc_p = btrue;
+        fix[0].suffix = "bound";
+        fix[0].env_found_p = btrue;
+        fix[1].suffix = "unbound";
+        fix[1].want_ex_p = btrue;
+        fix[1].want_Ip = -1;
+        return r;
 }
 
-@*2 |OP_NIL|.
+@*1 |OP_NIL|.
 
-@*2 |OP_NOOP|.
+@*1 |OP_NOOP|.
 
 The |OP_NOOP| opcode has the same effect as |OP_HALT|, ie. none,
 without halting the VM.
 
 @<Unit test: Interpreter@>=
-llt_Fixture *
+llt_buffer *
 llt_Interpreter__OP_NOOP (void)
 {
-        llt_Fixture *f = llt_alloc(1);
-        llt_Interpreter_fix(f, __func__);
-        return f;
+        llt_buffer *r = llt_alloc(1, llt_Fixture);
+        llt_Interpreter_fix((llt_Fixture *) r->data, __func__);
+        return r;
 }
 
-@*2 |OP_NULL_P|.
+@*1 |OP_NULL_P|.
 
-@*2 |OP_PAIR_P|.
+@*1 |OP_PAIR_P|.
 
-@*2 |OP_PEEK|.
+@*1 |OP_PEEK|.
 
-@*2 |OP_POP|.
+@*1 |OP_POP|.
 
-@*2 |OP_PUSH|.
+@*1 |OP_PUSH|.
 
-@*2 |OP_QUOTE|.
+@*1 |OP_QUOTE|.
 
-@*2 |OP_RETURN|.
-
-...
-
-@*2 |OP_RUN|.
+@*1 |OP_RETURN|.
 
 ...
 
-@*2 |OP_RUN_THERE|.
+@*1 |OP_RUN|.
 
 ...
 
-@*2 |OP_SET_CAR_M|.
+@*1 |OP_RUN_THERE|.
 
-@*2 |OP_SET_CDR_M|.
+...
 
-@*2 |OP_SNOC|. This opcode decomposes a pair in the accumulator,
+@*1 |OP_SET_CAR_M|.
+
+@*1 |OP_SET_CDR_M|.
+
+@*1 |OP_SNOC|. This opcode decomposes a pair in the accumulator,
 placing the |car| on the stack.
 
 @<Unit test: Interpreter@>=
@@ -7818,21 +7839,24 @@ llt_Interpreter__OP_SNOC_test (llt_Fixture *fix)
 }
 
 @ @<Unit test: Interpreter@>=
-llt_Fixture *
+llt_buffer *
 llt_Interpreter__OP_SNOC (void)
 {
-        llt_Fixture *f = llt_alloc(1);
-        llt_Interpreter_fix(f, __func__);
-        f[0].opcode = OP_SNOC;
-        f[0].prepare = llt_Interpreter__OP_SNOC_prepare;
-        f[0].test = llt_Interpreter__OP_SNOC_test;
-        f[0].mutate_Acc_p = btrue;
-        f[0].mutate_RTS_p = btrue;
-        f[0].mutate_RTSp_p = btrue;
-        return f;
+        llt_buffer *r;
+        llt_Fixture *fix;
+        r = llt_alloc(1, llt_Fixture);
+        fix = (llt_Fixture *) r->data;
+        llt_Interpreter_fix(fix, __func__);
+        fix[0].opcode = OP_SNOC;
+        fix[0].prepare = llt_Interpreter__OP_SNOC_prepare;
+        fix[0].test = llt_Interpreter__OP_SNOC_test;
+        fix[0].mutate_Acc_p = btrue;
+        fix[0].mutate_RTS_p = btrue;
+        fix[0].mutate_RTSp_p = btrue;
+        return r;
 }
 
-@*2 |OP_SWAP|. This opcode is similar to |OP_CYCLE| except for what
+@*1 |OP_SWAP|. This opcode is similar to |OP_CYCLE| except for what
 gets cycled.
 
 @<Unit test: Interpreter@>=
@@ -7864,28 +7888,31 @@ llt_Interpreter__OP_SWAP_test (llt_Fixture *fix)
 }
 
 @ @<Unit test: Interpreter@>=
-llt_Fixture *
+llt_buffer *
 llt_Interpreter__OP_SWAP (void)
 {
-        llt_Fixture *f = llt_alloc(2);
-        llt_Interpreter_fix(f + 0, __func__);
-        llt_Interpreter_fix(f + 1, __func__);
-        f[0].opcode = f[1].opcode = OP_SWAP;
-        f[0].prepare = f[1].prepare = llt_Interpreter__OP_SWAP_prepare;
-        f[0].test = f[1].test = llt_Interpreter__OP_SWAP_test;
-        f[0].mutate_Acc_p = f[1].mutate_Acc_p = btrue;
-        f[0].mutate_RTS_p = f[1].mutate_RTS_p = btrue;
-        f[0].suffix = "empty stack";
-        f[1].extra_stack = 3;
-        f[1].suffix = "stack in use";
-        return f;
+        llt_buffer *r;
+        llt_Fixture *fix;
+        r = llt_alloc(2, llt_Fixture);
+        fix = (llt_Fixture *) r->data;
+        llt_Interpreter_fix(fix + 0, __func__);
+        llt_Interpreter_fix(fix + 1, __func__);
+        fix[0].opcode = fix[1].opcode = OP_SWAP;
+        fix[0].prepare = fix[1].prepare = llt_Interpreter__OP_SWAP_prepare;
+        fix[0].test = fix[1].test = llt_Interpreter__OP_SWAP_test;
+        fix[0].mutate_Acc_p = fix[1].mutate_Acc_p = btrue;
+        fix[0].mutate_RTS_p = fix[1].mutate_RTS_p = btrue;
+        fix[0].suffix = "empty stack";
+        fix[1].extra_stack = 3;
+        fix[1].suffix = "stack in use";
+        return r;
 }
 
-@*2 |OP_SYNTAX|.
+@*1 |OP_SYNTAX|.
 
-@*2 |OP_VOV|.
+@*1 |OP_VOV|.
 
-@*1 Compiler.
+@* Compiler.
 
 The compiler generates bytecode from s-expressions, or raises a
 syntax or arity error. These tests verify that bytecode is generated
@@ -7949,7 +7976,6 @@ llt_Compiler_act (llt_Fixture *fix)
 }
 
 @ @<Unit test: Compiler@>=
-char * llt_Compiler_decompile (cell);
 boolean
 llt_Compiler_compare_bytecode (cell bc,
                                char *want,
@@ -8016,21 +8042,20 @@ llt_Compiler_test (llt_Fixture *fix)
 }
 
 @ @<Unit test: Compiler@>=
-llt_Fixture *
+void
 llt_Compiler_fix (llt_Fixture *fix,
                   const char *name)
 {
-        fix->name = name;
+        fix->name = (char *) name;
         fix->prepare = llt_Compiler_prepare;
         fix->destroy = llt_Compiler_destroy;
         fix->act = llt_Compiler_act;
         fix->test = llt_Compiler_test;
         fix->want = NULL;
         fix->want_ex = NIL;
-        return fix;
 }
 
-@*2 |compile_eval|.
+@*1 |compile_eval|.
 
 \point 1. {\it What is the contract fulfilled by the code under test?}
 
@@ -8101,106 +8126,109 @@ llt_Compiler__Eval_prepare (llt_Fixture *fix)
 }
 
 @ @<Unit test: Compiler@>=
-llt_Fixture *
+llt_buffer *
 llt_Compiler__Eval (void)
 {
         int i;
-        llt_Fixture *f = llt_alloc(16);
+        llt_buffer *r;
+        llt_Fixture *fix;
+        r = llt_alloc(16, llt_Fixture);
+        fix = (llt_Fixture *) r->data;
         for (i = 0; i < 16; i++) {
-                llt_Compiler_fix(f + i, __func__);
-                f[i].prepare = llt_Compiler__Eval_prepare;
+                llt_Compiler_fix(fix + i, __func__);
+                fix[i].prepare = llt_Compiler__Eval_prepare;
         }
         i = -1;
         @<Unit test part: compiler/|eval| fixtures@>@;
-        return f;
+        return r;
 }
 
 @ Constant-value arguments validate arity validation.
 
 @<Unit test part: compiler/|eval| fixtures@>=
-f[++i].src_exp = "(eval)";
-f[  i].suffix = "eval";
-f[  i].want_ex = Sym_ERR_ARITY_SYNTAX;
-f[++i].src_exp = "(eval 42)";
-f[  i].suffix = "eval x";
-f[  i].want = CAT2(LLTCC_EVAL_FIRST_QUOTE("42"), LLTCC_EVAL_ONEARG());
-f[++i].src_exp = "(eval 4 2)";
-f[  i].suffix = "eval x x";
-f[  i].want = CAT4(LLTCC_EVAL_SECOND_QUOTE("2"), LLTCC_EVAL_VALIDATE("9"),
+fix[++i].src_exp = "(eval)";
+fix[  i].suffix = "eval";
+fix[  i].want_ex = Sym_ERR_ARITY_SYNTAX;
+fix[++i].src_exp = "(eval 42)";
+fix[  i].suffix = "eval x";
+fix[  i].want = CAT2(LLTCC_EVAL_FIRST_QUOTE("42"), LLTCC_EVAL_ONEARG());
+fix[++i].src_exp = "(eval 4 2)";
+fix[  i].suffix = "eval x x";
+fix[  i].want = CAT4(LLTCC_EVAL_SECOND_QUOTE("2"), LLTCC_EVAL_VALIDATE("9"),
         LLTCC_EVAL_FIRST_QUOTE("4"), LLTCC_EVAL_TWOARG());
-f[++i].src_exp = "(eval 4 2 ?)";
-f[  i].suffix = "eval x x x";
-f[  i].want_ex = Sym_ERR_ARITY_SYNTAX;
+fix[++i].src_exp = "(eval 4 2 ?)";
+fix[  i].suffix = "eval x x x";
+fix[  i].want_ex = Sym_ERR_ARITY_SYNTAX;
 
 @ Validating that a single expression is compiled.
 
 @<Unit test part: compiler/|eval| fixtures@>=
-f[++i].src_exp = "(eval 42)";
-f[  i].suffix = "eval <constant>";
-f[  i].want = CAT2(LLTCC_EVAL_FIRST_QUOTE("42"), LLTCC_EVAL_ONEARG());
-f[++i].src_exp = "(eval marco?)";
-f[  i].suffix = "eval <symbol>";
-f[  i].want = CAT2(LLTCC_EVAL_FIRST_LOOKUP("marco?"), LLTCC_EVAL_ONEARG());
-f[++i].src_exp = "(eval (build an expression))";
-f[  i].suffix = "eval <complex expression>";
-f[  i].want = CAT2(LLTCC_EVAL_FIRST_COMPLEX("build", "an expression"),
+fix[++i].src_exp = "(eval 42)";
+fix[  i].suffix = "eval <constant>";
+fix[  i].want = CAT2(LLTCC_EVAL_FIRST_QUOTE("42"), LLTCC_EVAL_ONEARG());
+fix[++i].src_exp = "(eval marco?)";
+fix[  i].suffix = "eval <symbol>";
+fix[  i].want = CAT2(LLTCC_EVAL_FIRST_LOOKUP("marco?"), LLTCC_EVAL_ONEARG());
+fix[++i].src_exp = "(eval (build an expression))";
+fix[  i].suffix = "eval <complex expression>";
+fix[  i].want = CAT2(LLTCC_EVAL_FIRST_COMPLEX("build", "an expression"),
         LLTCC_EVAL_ONEARG());
 
 @ Two expressions where the first is constant.
 
 @<Unit test part: compiler/|eval| fixtures@>=
-f[++i].src_exp = "(eval 42 24)";
-f[  i].suffix = "eval <constant> <constant>";
-f[  i].want = CAT4(LLTCC_EVAL_SECOND_QUOTE("24"), LLTCC_EVAL_VALIDATE("9"),
+fix[++i].src_exp = "(eval 42 24)";
+fix[  i].suffix = "eval <constant> <constant>";
+fix[  i].want = CAT4(LLTCC_EVAL_SECOND_QUOTE("24"), LLTCC_EVAL_VALIDATE("9"),
         LLTCC_EVAL_FIRST_QUOTE("42"), LLTCC_EVAL_TWOARG());
-f[++i].src_exp = "(eval 42 marco?)";
-f[  i].suffix = "eval <constant> <symbol>";
-f[  i].want = CAT4(LLTCC_EVAL_SECOND_LOOKUP("marco?"), LLTCC_EVAL_VALIDATE("10"),
+fix[++i].src_exp = "(eval 42 marco?)";
+fix[  i].suffix = "eval <constant> <symbol>";
+fix[  i].want = CAT4(LLTCC_EVAL_SECOND_LOOKUP("marco?"), LLTCC_EVAL_VALIDATE("10"),
         LLTCC_EVAL_FIRST_QUOTE("42"), LLTCC_EVAL_TWOARG());
-f[++i].src_exp = "(eval 42 (get an environment))";
-f[  i].suffix = "eval <constant> <complex expression>";
-f[  i].want = CAT4(LLTCC_EVAL_SECOND_COMPLEX("get", "an environment"),
+fix[++i].src_exp = "(eval 42 (get an environment))";
+fix[  i].suffix = "eval <constant> <complex expression>";
+fix[  i].want = CAT4(LLTCC_EVAL_SECOND_COMPLEX("get", "an environment"),
         LLTCC_EVAL_VALIDATE("16"),
         LLTCC_EVAL_FIRST_QUOTE("42"), LLTCC_EVAL_TWOARG());
 
 @ Two expressions where the first is a symbol.
 
 @<Unit test part: compiler/|eval| fixtures@>=
-f[++i].src_exp = "(eval marco? 24)";
-f[  i].suffix = "eval <symbol> <constant>";
-f[  i].want = CAT4(LLTCC_EVAL_SECOND_QUOTE("24"), LLTCC_EVAL_VALIDATE("9"),
+fix[++i].src_exp = "(eval marco? 24)";
+fix[  i].suffix = "eval <symbol> <constant>";
+fix[  i].want = CAT4(LLTCC_EVAL_SECOND_QUOTE("24"), LLTCC_EVAL_VALIDATE("9"),
         LLTCC_EVAL_FIRST_LOOKUP("marco?"), LLTCC_EVAL_TWOARG());
-f[++i].src_exp = "(eval marco? polo!)";
-f[  i].suffix = "eval <symbol> <symbol>";
-f[  i].want = CAT4(LLTCC_EVAL_SECOND_LOOKUP("polo!"), LLTCC_EVAL_VALIDATE("10"),
+fix[++i].src_exp = "(eval marco? polo!)";
+fix[  i].suffix = "eval <symbol> <symbol>";
+fix[  i].want = CAT4(LLTCC_EVAL_SECOND_LOOKUP("polo!"), LLTCC_EVAL_VALIDATE("10"),
         LLTCC_EVAL_FIRST_LOOKUP("marco?"), LLTCC_EVAL_TWOARG());
-f[++i].src_exp = "(eval marco? (a new environment))";
-f[  i].suffix = "eval <symbol> <complex expression>";
-f[  i].want = CAT4(LLTCC_EVAL_SECOND_COMPLEX("a", "new environment"),
+fix[++i].src_exp = "(eval marco? (a new environment))";
+fix[  i].suffix = "eval <symbol> <complex expression>";
+fix[  i].want = CAT4(LLTCC_EVAL_SECOND_COMPLEX("a", "new environment"),
         LLTCC_EVAL_VALIDATE("16"),
         LLTCC_EVAL_FIRST_LOOKUP("marco?"), LLTCC_EVAL_TWOARG());
 
 @ Two expressions where the first is a complex expression.
 
 @<Unit test part: compiler/|eval| fixtures@>=
-f[++i].src_exp = "(eval (get an expression) 24)";
-f[  i].suffix = "eval <complex expression> <constant>";
-f[  i].want = CAT4(LLTCC_EVAL_SECOND_QUOTE("24"), LLTCC_EVAL_VALIDATE("9"),
+fix[++i].src_exp = "(eval (get an expression) 24)";
+fix[  i].suffix = "eval <complex expression> <constant>";
+fix[  i].want = CAT4(LLTCC_EVAL_SECOND_QUOTE("24"), LLTCC_EVAL_VALIDATE("9"),
         LLTCC_EVAL_FIRST_COMPLEX("get", "an expression"),
         LLTCC_EVAL_TWOARG());
-f[++i].src_exp = "(eval (get another expression) marco?)";
-f[  i].suffix = "eval <complex expression> <symbol>";
-f[  i].want = CAT4(LLTCC_EVAL_SECOND_LOOKUP("marco?"), LLTCC_EVAL_VALIDATE("10"),
+fix[++i].src_exp = "(eval (get another expression) marco?)";
+fix[  i].suffix = "eval <complex expression> <symbol>";
+fix[  i].want = CAT4(LLTCC_EVAL_SECOND_LOOKUP("marco?"), LLTCC_EVAL_VALIDATE("10"),
         LLTCC_EVAL_FIRST_COMPLEX("get", "another expression"),
         LLTCC_EVAL_TWOARG());
-f[++i].src_exp = "(eval (once more) (this time with feeling))";
-f[  i].suffix = "eval <complex expression> <complex expression>";
-f[  i].want = CAT4(LLTCC_EVAL_SECOND_COMPLEX("this", "time with feeling"),
+fix[++i].src_exp = "(eval (once more) (this time with feeling))";
+fix[  i].suffix = "eval <complex expression> <complex expression>";
+fix[  i].want = CAT4(LLTCC_EVAL_SECOND_COMPLEX("this", "time with feeling"),
         LLTCC_EVAL_VALIDATE("16"),
         LLTCC_EVAL_FIRST_COMPLEX("once", "more"),
         LLTCC_EVAL_TWOARG());
 
-@*1 I/O.
+@* I/O.
 
 @* Pair Integration. With the basic building blocks' interactions
 tested we arrive at the critical integration between the compiler

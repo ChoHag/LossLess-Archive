@@ -1,0 +1,114 @@
+Testing has become a mess. These are the plans to clean it up:
+
+Pattern:
+t/lltest.o is lossless with -DLL_TEST
+t/llalloc.o is lossless with -DLL_TEST -DLL_ALLOCATE=fallible_reallocarray
+All t/*.c files link against one of these.
+
+typedef buffer (size + void*) && growth-only allocator
+object_copy(_imp), object_compare, object_sizeof* rename llt_object, merge with llt_copy*
+tap_* rename lltap_*
+test_* rename llt<something>* (and s/TEST/LLT/)
+Any old test executable only to lloldt_*
+
+Test scripts define 1 or more units in their global Test_Fixtures array
+(of function pointers to returning llt_Fixture, possibly rename
+llt_fixture).
+
+Test scripts define their llt_Fixture structure independently depending
+on the units it defines.
+
+Each function in Test_Fixtures returns a pointer to an array of fixtures.
+
+main() prepares the whole suite with llt_prepare which simply
+concatenates the arrays.
+
+llt_main then runs each test case (no way at present to run a single
+unit only) then repeats it (unless otherwise instructed) enough times to
+trigger garbage collection after each heap allocation that takes place.
+
+Test names & suffixes do not work correctly with the garbage collection
+re-testing but this is cosmetic and can be fixed with the allocator is
+ready.
+
+This is the basic structure of a test script in the CWEB source which
+eventually all (C) tests will use:
+
+@*1. XXX.
+
+\point 1. {\it What is the contract fulfilled by the code under test?}
+
+\point 2. {\it What preconditions are required, and how are they
+enforced?}
+
+\point 3. {\it What postconditions are guaranteed?}
+
+\point 4. {\it What example inputs trigger different behaviors?}
+
+\point 5. {\it What set of tests will trigger each behavior and
+validate each guarantee?}
+
+@(t/xxx.c@>=
+@<Unit test header@>@;
+
+struct llt_Fixture {
+        LLT_FIXTURE_HEADER;
+};
+
+@<Unit test body@>@;
+
+@<Unit test: XXX@>@;
+
+llt_fixture Test_Fixtures[] = {@|
+        llt_XXX__ttt,
+        NULL@/
+};
+
+@ @<Unit test: XXX@>=
+void
+llt_XXX_prepare (llt_Fixture *fix)
+{
+}
+
+@ @<Unit test: XXX@>=
+void
+llt_XXX_destroy (llt_Fixture *fix)
+{
+}
+
+@ @<Unit test: XXX@>=
+void
+llt_XXX_act (llt_Fixture *fix)
+{
+}
+
+@ @<Unit test: XXX@>=
+boolean
+llt_XXX_test (llt_Fixture *fix)
+{
+        char buf[TEST_BUFSIZE];
+        boolean ok;
+        ok = tap_ok(xxx == yyy, fpmsgf("yyy"));
+        return ok;
+}
+
+@ @<Unit test: XXX@>=
+void
+llt_XXX_fix (llt_Fixture *fix,
+             char *name)
+{
+        fix->name = name;
+        fix->prepare = llt_XXX_prepare;
+        fix->destroy = llt_XXX_destroy;
+        fix->act = llt_XXX_act;
+        fix->test = llt_XXX_test;
+}
+
+@ @<Unit test: XXX@>=
+llt_buffer *
+llt_XXX__ttt (void)
+{
+        llt_buffer *r = llt_alloc(1, llt_Fixture);
+        llt_XXX_fix((llt_Fixture *) r->data, __func__);
+        return r;
+}
