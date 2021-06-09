@@ -1946,6 +1946,7 @@ cell read_form (void);
 cell read_list (cell);
 cell read_number (void);
 cell read_sexp (void);
+cell read_special (void);
 cell read_symbol (void);
 void unread_byte (char);
 int useful_byte (void);
@@ -2102,11 +2103,16 @@ case '.':
         unread_byte(c);
         return READ_DOT;
 
-@ Special forms and strings aren't supported yet.
+@ The only special form yet supported is booleans.
+
+@<Reader...@>=
+case '#':
+        return read_special();
+
+@ Strings and binary symbols aren't supported yet.
 
 @<Reader...@>=
 case '"':
-case '#':
 case '|':
         error(ERR_UNIMPLEMENTED, NIL);
 
@@ -2283,6 +2289,28 @@ read_number (void)
         if (r > INT_MAX || r < INT_MIN)
                 error(ERR_UNIMPLEMENTED, NIL);
         return int_new(r);
+}
+
+@ I could explain how booleans work here, or I could not.
+
+@c
+cell
+read_special (void)
+{
+        cell r = NIL;
+        int c;
+        c = read_byte();
+        if (c == 'f')
+                r = FALSE;
+        else if (c == 't')
+                r = TRUE;
+        else
+                error(ERR_UNIMPLEMENTED, NIL);
+        c = read_byte();
+        if (!terminable_p(c))
+                error(ERR_ARITY_SYNTAX, NIL);
+        unread_byte(c);
+        return r;
 }
 
 @ Although \LL/ specifices (read: would specify) that there are no
@@ -4361,14 +4389,19 @@ simple memory manager which is designed solely for buffers which
 can grow but are never likely to be deallocated.
 
 The data pointer is a |char *| rather than the more appropriate
-|void *| because these buffers are mostly used to store \CEE/-strings.
-Other uses of this structure would need to cast the pointer anyway.
+|void *| because these buffers are mostly used to store \CEE/-strings
+or an |llt_Fixture| buffer (defined later) for which there's a few
+macros.
 
 Because this allocator will be used exclusively by the test code
 to allocate small buffers, primarily for small pieces of text, no
 especial care is taken to guard against any errors beyond memory
 exhaustion.
 
+@d bfixn(f,n) ((llt_Fixture *) ((f)->data))[(n)]
+@d bfix0(f) bfixn((f), (f)->len - 2)
+@d bfix1(f) bfixn((f), (f)->len - 1)
+@d bfix bfix1
 @<Type def...@>=
 typedef struct {
         size_t len;
@@ -4378,6 +4411,7 @@ typedef struct {
 
 @ @<Func...@>=
 llt_buffer *llt_alloc_imp (size_t, size_t);
+llt_buffer *llt_cat (const char *, ...);
 llt_buffer *llt_grow_imp (llt_buffer *, size_t);
 
 @ @d llt_alloc(l,t) llt_alloc_imp((l), sizeof (t))
@@ -4409,6 +4443,26 @@ llt_grow_imp (llt_buffer *old,
               new->size * (len - new->len));
         new->len = len;
         return new;
+}
+
+@ Every application should come with a cat. This one should soon
+start hunting down badly tangled test strings.
+
+@c
+llt_buffer *
+llt_cat (const char *fmt,
+         ...)
+{
+        llt_buffer *r = llt_alloc(0, char);
+        int ret = -1;
+        va_list ap;
+        va_start(ap, fmt);
+        while (ret < 0 || r->data[r->len - 1]) {
+                llt_grow(r, BUFFER_SEGMENT);
+                ret = vsnprintf(r->data, r->len, fmt, ap);
+        }
+        va_end(ap);
+        return r;
 }
 
 @* Utilities: Serialisation. Some tests need to see if an object
@@ -4612,6 +4666,7 @@ test_msgf (char *tmsg,
            char *fmt,
            ...)
 {
+        /* TODO: feed this to the cat */
         char ttmp[TEST_BUFSIZE] = {0};
         int ret;
         va_list ap;
@@ -4926,6 +4981,23 @@ llt_prepare (void)
         for (i = 0; i < (int) r->len; i++)
                 ((llt_Fixture *) r->data)[i].id = i;
         return r;
+}
+
+@* Utilities: Miscellaneous. Other bits and pieces only of interest
+to the tests.
+
+@c
+boolean
+llt_contains_p (cell haystack,
+                cell needle)
+{
+        for (; pair_p(haystack); haystack = cdr(haystack))
+                if (needle == haystack || needle == car(haystack))
+                        return btrue;
+        if (!null_p(haystack))
+                if (needle == haystack)
+                        return btrue;
+        return bfalse;
 }
 
 @* Old tests. Some early tests were churned out while the test
@@ -7942,6 +8014,7 @@ struct llt_Fixture {
 
 llt_fixture Test_Fixtures[] = {@|
         llt_Compiler__Eval,
+        llt_Compiler__Lambda,
         NULL@/
 };
 
@@ -8022,7 +8095,7 @@ llt_Compiler_test (llt_Fixture *fix)
         boolean ok, match;
         if (fix->want == NULL) {
                 ok = tap_ok(fix->had_ex_p, fpmsgf("an error was raised"));
-                tap_more(ok, ex_id(Acc) == fix->want_ex,
+                tap_again(ok, ex_id(Acc) == fix->want_ex,
                         fpmsgf("the error type is correct"));
         } else {
                 ok = tap_ok(!fix->had_ex_p,
@@ -8225,6 +8298,349 @@ fix[  i].want = CAT4(LLTCC_EVAL_SECOND_COMPLEX("this", "time with feeling"),
         LLTCC_EVAL_VALIDATE("16"),
         LLTCC_EVAL_FIRST_COMPLEX("once", "more"),
         LLTCC_EVAL_TWOARG());
+
+@*1 |compile_lambda|.
+
+\point 1. {\it What is the contract fulfilled by the code under test?}
+
+An error is raised if there is not at least one argument, the
+remaining arguments (the {\it body}) are not a proper list, or the
+first argument isn't in the form of |lambda| {\it formals}, ie.
+|NIL|, a |symbol| or a possibly improper list of |#f|s or {\it
+unique} |symbol|s.
+
+Otherwise the form is accepted and the {\it formals} and {\it body}
+are compiled into bytecode which will build an applicative closure.
+
+\point 2. {\it What preconditions are required, and how are they
+enforced?}
+
+\point 3. {\it What postconditions are guaranteed?}
+
+As with other compilers the virtual machine's dynamic state apart
+from the heap has no effect on the result and will be unchanged
+under all circumstances.
+
+When bytecode is compiled it will reference the new applicative's
+formals list directly and this compiled list will not share any
+mutable references with the source s-expression.
+
+\point 4. {\it What example inputs trigger different behaviors?}
+
+{\it Whether} the body compiles or not depends on whether it's a
+well-formed list or not. What the expression compiles {\it to} is
+affected by what the list contains. This is a moot point because
+it's done by |compile_list| which is tested elsewhere and there's
+no value in repeating its tests. This test will only concentrate
+on demonstrating that an improper list is a syntax error.
+
+Otherwise well formed vs. invalid formals including formals which
+repeat symbols will exercise each code path of interest.
+
+\point 5. {\it What set of tests will trigger each behavior and
+validate each guarantee?}
+
+Broadly speaking they can be grouped into three categories: Failure when
+the formals are invalid, failure when the body is improper and
+successful compilation of valid forms.
+Failures:
+
+These tests all work by dynamically constructing a \CEE/-string of
+\LL/ code. That string is formed when the fixture is defined based
+on short strings of |S|, |D|, |I| and |O| which expand to a symbol,
+a duplicate (ie. re-use a symbol used previously), an ignored
+argument and object respectively. Object means to put something
+invalid in the formals, in this case |#t| is used which has the
+added advantage of ensuring that |#t| doesn't accidentally become
+permitted and allow untold end-user frustration.
+
+Two fixtures are defined for each test of the formals (except formals
+of |NIL| when that makes no sense) with the latter of the pair
+creating an improper formals list (a plain |symbol| and |#f| are
+tested this way).
+
+@<Unit test: Compiler@>=
+void
+llt_Compiler__Lambda_prepare (llt_Fixture *fix)
+{
+        llt_Compiler_prepare(fix);
+        car(fix->src_val) = env_search(Root, sym("lambda"));
+}
+
+@ This unit test must check that no mutable cell from the formals
+in the expression is included in the bytecode. The method of testing
+relies on the compiler not modifying the source expression rather
+than attempt to store it beforehand.
+
+@<Unit test: Compiler@>=
+boolean
+llt_Compiler__Lambda_test (llt_Fixture *fix)
+{
+        char buf[TEST_BUFSIZE] = {0};
+        boolean fok, ok;
+        cell f, fex, frv;
+        ok = llt_Compiler_test(fix);
+        if (fix->want) {
+                fex = cadr(fix->src_val);
+                frv = vector_ref(fix->ret_val, 1);
+                fok = btrue;
+                for (f = fex; pair_p(f); f = cdr(f))
+                        if (!special_p(f) && llt_contains_p(frv, f)) {
+                                fok = bfalse;
+                                break;
+                        }
+                tap_more(ok, fok, fpmsgf("the formals do not share cells"));
+        }
+        return ok;
+}
+
+@ @<Unit test: Compiler@>=
+void
+llt_Compiler__Lambda_fix (llt_Fixture *fix,
+                          const char *name)
+{
+        llt_Compiler_fix(fix, name);
+        fix->prepare = llt_Compiler__Lambda_prepare;
+        fix->test = llt_Compiler__Lambda_test;
+}
+
+@ The fixtures are defined in mostly the same way using
+|llt_Compiler__Lambda_build|, defined below, to build the source
+expression in a \CEE/-string.
+ 
+@<Unit test: Compiler@>=
+llt_buffer *llt_Compiler__Lambda_build (const char *, llt_buffer *,
+        char *, char *, char *);
+
+@ Successful compilation returns bytecode that consists of three main
+components, followed by the |OP_RETURN| emitted by |compile|. First
+the formals are pushed onto the stack, then the lambda is constructed
+and control jumps over its body, then comes the body itself.
+
+All of the test cases in this unit compile the same lambda body so
+the only change is what gets included in the formals position.
+
+@d LLTCC_LAMBDA_SUCCESS "(OP_QUOTE %s OP_PUSH" /* formals */
+        " OP_LAMBDA 7 OP_JUMP 10 OP_QUOTE #<> OP_RETURN" /* body */
+        " OP_RETURN)" /* emitted by |compile| */
+@<Unit test: Compiler@>=
+llt_buffer *
+llt_Compiler__Lambda (void)
+{
+        llt_buffer *fbuf;
+        fbuf = llt_alloc(1, llt_Fixture);
+        llt_Compiler__Lambda_fix((llt_Fixture *) fbuf->data, __func__);
+        bfix(fbuf).src_exp = "(lambda)";
+        bfix(fbuf).suffix = "no arguments";
+        bfix(fbuf).want_ex = Sym_ERR_ARITY_SYNTAX;
+        @<Unit test part: lambda compiler, invalid formals@>@;
+        @<Unit test part: lambda compiler, invalid body@>@;
+        @<Unit test part: lambda compiler, successful compilation@>@;
+        return fbuf;
+}
+
+@ Tests which are expected to succeed. Each of these but the first,
+which represents \.{(lambda ())}, defines two fixtures.
+
+@d lltfix_lambda_success(f)
+        fbuf = llt_Compiler__Lambda_build(__func__, fbuf, (f), "", NULL)
+@<Unit test part: lambda compiler, successful compilation@>=
+lltfix_lambda_success("");
+lltfix_lambda_success("I");
+lltfix_lambda_success("S");
+lltfix_lambda_success("II");
+lltfix_lambda_success("IS");
+lltfix_lambda_success("SI");
+lltfix_lambda_success("SS");
+lltfix_lambda_success("III");
+lltfix_lambda_success("IIS");
+lltfix_lambda_success("ISI");
+lltfix_lambda_success("ISS");
+lltfix_lambda_success("SII");
+lltfix_lambda_success("SIS");
+lltfix_lambda_success("SSI");
+lltfix_lambda_success("SSS");
+
+@ All combinations of formals with an invalid object in them.
+
+@d lltfix_lambda_fail_formals(f)
+        fbuf = llt_Compiler__Lambda_build(__func__, fbuf, (f), "", NULL)
+@<Unit test part: lambda compiler, invalid formals@>=
+lltfix_lambda_fail_formals("O");
+lltfix_lambda_fail_formals("OS");
+lltfix_lambda_fail_formals("SO");
+lltfix_lambda_fail_formals("SD");
+lltfix_lambda_fail_formals("OSS");
+lltfix_lambda_fail_formals("SOS");
+lltfix_lambda_fail_formals("SSO");
+lltfix_lambda_fail_formals("SOO");
+lltfix_lambda_fail_formals("OSO");
+lltfix_lambda_fail_formals("OOS");
+lltfix_lambda_fail_formals("OSD");
+lltfix_lambda_fail_formals("SOD");
+lltfix_lambda_fail_formals("SDO");
+
+@ |compile_lambda| doesn't validate the body at all nevertheless 3
+sanity tests confirm that an improper list generates a syntax error
+without compilation.
+
+@d lltfix_lambda_fail_body(b,d)
+        fbuf = llt_Compiler__Lambda_build(__func__, fbuf, "", (b), (d))
+@<Unit test part: lambda compiler, invalid body@>=
+lltfix_lambda_fail_body("S", "improper body (1 item)");
+lltfix_lambda_fail_body("SS", "improper body (2 items)");
+lltfix_lambda_fail_body("SSS", "improper body (3 items)");
+
+@ The longest source string created by any of these test cases is
+\.{(lambda\ (\#f\ \#f\ .\ \#f))} which is 21 bytes including the
+terminating zero terminator. To avoid excessive allocation of tiny
+buffers 100 bytes is allocated for each pair of fixtures giving
+each 25 bytes to hold the source string and a shorter representation
+to name the test for display. If test cases are defined involving
+longer expressions then the length of this buffer will need to be
+increased (or switched to dynamic allocation).
+
+@d LLT_BUFLET_SEGMENT 100
+@d LLT_BUFLET_SLICE (LLT_BUFLET_SEGMENT / 4)
+@d straffix(b,c) do@+ {
+        *(b)++ = (c);
+        *(b) = '\0';
+}@+ while (0)
+@d straffix_both(b0,b1,c) do@+ {
+        char _c = (c); /* avoid side-effects */
+        straffix((b0), _c);
+        straffix((b1), _c);
+}@+ while (0)
+@<Unit test: Compiler@>=
+llt_buffer *
+llt_Compiler__Lambda_build (const char *name,
+                            llt_buffer *fbuf,
+                            char *formals,
+                            char *body,
+                            char *desc)
+{
+        char *o0, *o1, *s = "xyz";
+        int i;
+        if (!*formals) {
+                @<Unit test part: lambda compiler, test body type@>@;
+                return fbuf;
+        }
+        @<Unit test part: lambda compiler, test with varying formals@>@;
+        return fbuf;
+}
+
+@ |lambda| expressions fixtures which are created without a list
+of formals are either the successfuly-compiled ``zero'' function
+\.{(lambda ())} or a badly-formed expression with an improper list
+for its body.
+
+@<Unit test part: lambda compiler, test body type@>=
+llt_grow(fbuf, 1);
+llt_Compiler__Lambda_fix(&bfix(fbuf), name);
+if (!*body) {
+        bfix(fbuf).src_exp = "(lambda ())";
+        bfix(fbuf).suffix = "lambda ()";
+        bfix(fbuf).want = llt_cat(LLTCC_LAMBDA_SUCCESS, "()")->data;
+} else {
+        @<Unit test part: lambda compiler, test a broken body@>@;
+}
+
+@ A single fixture is created for each broken body test. These
+fixtures use the description in the arguments.
+
+@<Unit test part: lambda compiler, test a broken body@>=
+bfix(fbuf).suffix = desc;
+ERR_OOM_P(bfix(fbuf).src_exp = calloc(LLT_BUFLET_SEGMENT, 1));
+sprintf(bfix(fbuf).src_exp, "(lambda ()");
+o0 = bfix(fbuf).src_exp + strlen(bfix(fbuf).src_exp);
+while (*body++) {
+        if (!*body) {
+                straffix(o0, ' ');
+                straffix(o0, '.');
+        }
+        straffix(o0, ' ');
+        straffix(o0, *s++);
+}
+straffix(o0, ')');
+bfix(fbuf).want_ex = Sym_ERR_ARITY_SYNTAX;
+
+@ The expression for pair of fixtures is created together then
+copied into the suffix without its surrounding parentheses. The
+magic number 8 is the length of ``\.{(lambda\ }'' including the
+\.{\ } but not the terminating |NULL|.
+
+@<Unit test part: lambda compiler, test with varying formals@>=
+llt_grow(fbuf, 2);
+llt_Compiler__Lambda_fix(&bfix0(fbuf), name);
+llt_Compiler__Lambda_fix(&bfix1(fbuf), name);
+ERR_OOM_P(bfix0(fbuf).src_exp = calloc(LLT_BUFLET_SEGMENT, 1));
+bfix0(fbuf).suffix  = bfix0(fbuf).src_exp + LLT_BUFLET_SLICE * 1;
+bfix1(fbuf).src_exp = bfix0(fbuf).src_exp + LLT_BUFLET_SLICE * 2;
+bfix1(fbuf).suffix  = bfix0(fbuf).src_exp + LLT_BUFLET_SLICE * 3;
+sprintf(bfix0(fbuf).src_exp, "(lambda ");
+sprintf(bfix1(fbuf).src_exp, "(lambda ");
+o0 = bfix0(fbuf).src_exp + 8;
+o1 = bfix1(fbuf).src_exp + 8;
+@<Unit test part: lambda compiler, build formals@>@;
+if (null_p(bfix(fbuf).want_ex)) {
+        bfix0(fbuf).want
+                = llt_cat(LLTCC_LAMBDA_SUCCESS, bfix0(fbuf).src_exp + 8)->data;
+        bfix1(fbuf).want
+                = llt_cat(LLTCC_LAMBDA_SUCCESS, bfix1(fbuf).src_exp + 8)->data;
+}
+straffix_both(o0, o1, ')');
+strlcpy(bfix0(fbuf).suffix, bfix0(fbuf).src_exp + 1,
+        strlen(bfix0(fbuf).src_exp) - 1);
+strlcpy(bfix1(fbuf).suffix, bfix1(fbuf).src_exp + 1,
+        strlen(bfix1(fbuf).src_exp) - 1);
+
+@ If the formals should be created with one item then the alternative
+form is without parentheses at all (\.{(lambda x)} and \.{(lambda
+\#f)}), otherwise it is a dotted list.
+
+@<Unit test part: lambda compiler, build formals@>=
+if (!formals[1])
+        straffix(o0, '(');
+else
+        straffix_both(o0, o1, '(');
+for (i = 0; formals[i]; i++) {
+        if (i && !formals[i + 1]) {
+                straffix(o1, ' ');
+                straffix(o1, '.');
+        }
+        @<Unit test part: lambda compiler, append a formal@>@;
+}
+if (!formals[1])
+        straffix(o0, ')');
+else
+        straffix_both(o0, o1, ')');
+
+@ The next item in the formals is created by appending a space after
+the first iteration then character[s] representing the type of
+object. If an invalid object or duplicate symbol is appended then
+the fixtures are marked as expected to fail.
+
+@<Unit test part: lambda compiler, append a formal@>=
+if (i)
+        straffix_both(o0, o1, ' ');
+switch (formals[i]) {
+case 'S':
+        straffix_both(o0, o1, *s++);
+        break;
+case 'D':
+        straffix_both(o0, o1, *(s - 1));
+        bfix0(fbuf).want_ex = bfix1(fbuf).want_ex = Sym_ERR_ARITY_SYNTAX;
+        break;
+case 'I':
+        straffix_both(o0, o1, '#');
+        straffix_both(o0, o1, 'f');
+        break;
+case 'O':
+        straffix_both(o0, o1, '#');
+        straffix_both(o0, o1, 't');
+        bfix0(fbuf).want_ex = bfix1(fbuf).want_ex = Sym_ERR_ARITY_SYNTAX;
+        break;
+}
 
 @* I/O.
 
