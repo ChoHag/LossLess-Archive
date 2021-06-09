@@ -1486,14 +1486,13 @@ env_lift_stack (cell e,
                         name = formals;
                         formals = NIL;
                 }
-                if (null_p(name))
-                        rts_clear(1);
-                else {
-                        ass = cons(rts_pop(1), NIL);
+                ass = rts_pop(1);
+                if (symbol_p(name)) {
+                        ass = cons(ass, NIL);
                         ass = cons(name, ass);
                         p = cons(ass, p);
                         vms_set(p);
-                }
+                } /* TODO: |else assert(false_p(name));| */
         }
         r = env_extend(e);
         env_layer(r) = p;
@@ -3532,7 +3531,7 @@ compile_lambda (cell op,
 {
         cell body, in, formals, f;
         int begin_address, comefrom_end;
-        body = arity(op, args, 1, 1);
+        body = arity(op, args, 1, btrue);
         body = undot(body);
         formals = cts_pop();
         formals = undot(formals);
@@ -3556,19 +3555,25 @@ a single |symbol| then it must be a list of |symbol|s which is
 verified here. At the same time if the list is a dotted pair then
 the |syntax| wrapper is removed.
 
+@d find_formal_duplicates(n,h) if (symbol_p(n))
+        for (cell d = (h); !null_p(d); d = cdr(d))
+                if (car(d) == (n))
+                        arity_error(ERR_ARITY_SYNTAX, op, args);
 @<Process lambda formals@>=
 cts_push(f = cons(NIL, NIL));
 in = formals;
 while (pair_p(in)) {
-        if (!symbol_p(car(in)) && !null_p(car(in)))
+        if (!symbol_p(car(in)) && !false_p(car(in)))
                 arity_error(ERR_ARITY_SYNTAX, op, args);
+        find_formal_duplicates(car(in), cdr(cts_ref()));
         cdr(f) = cons(car(in), NIL);
         f = cdr(f);
         in = undot(cdr(in));
 }
 if (!null_p(in)) {
-        if (!symbol_p(in) && !null_p(in))
+        if (!symbol_p(in) && !false_p(in))
                 arity_error(ERR_ARITY_SYNTAX, op, args);
+        find_formal_duplicates(in, cdr(cts_ref()));
         cdr(f) = in;
 }
 formals = cdr(cts_pop());
