@@ -52,6 +52,7 @@ repetetive and facilitates easier testing.
 #ifndef LOSSLESS_H
 #define LOSSLESS_H
 @<System headers@>@;
+@<Repair the system headers@>@;
 @h
 @<Complex definitions \AM\ macros@>@;
 @<Type definitions@>@;
@@ -66,6 +67,7 @@ into the accumulator, where the result will also be left.
 
 @c
 @<System headers@>@;
+@<Repair the system headers@>@;
 @h
 @<Complex definitions \AM\ macros@>@;
 @<Type definitions@>@;
@@ -146,7 +148,7 @@ extern jmp_buf Goto_Begin;
 extern jmp_buf Goto_Error;
 
 @ @<Function dec...@>=
-void error_imp (char *, cell, cell) __dead;
+void ll_noreturn error_imp (char *, cell, cell);
 void warn (char *, cell);
 
 @ Raised errors may either be a \CEE/-`string'\footnote{$^1$}{\CEE/
@@ -2448,7 +2450,7 @@ ssize_t
 write_applicative(cell sexp,
                   char *buf,
                   ssize_t rem,
-                  int depth __unused)
+                  int depth ll_unused)
 {
         ssize_t len = 0;
         if (!applicative_p(sexp))
@@ -2461,7 +2463,7 @@ ssize_t
 write_compiler(cell sexp,
                char *buf,
                ssize_t rem,
-               int depth __unused)
+               int depth ll_unused)
 {
         ssize_t len = 0;
         if (!compiler_p(sexp))
@@ -2479,7 +2481,7 @@ ssize_t
 write_operative(cell sexp,
                 char *buf,
                 ssize_t rem,
-                int depth __unused)
+                int depth ll_unused)
 {
         ssize_t len = 0;
         if (!operative_p(sexp))
@@ -2495,7 +2497,7 @@ ssize_t
 write_integer(cell sexp,
               char *buf,
               ssize_t rem,
-              int depth __unused)
+              int depth ll_unused)
 {
         ssize_t len = 0;
         if (!integer_p(sexp))
@@ -2510,7 +2512,7 @@ ssize_t
 write_symbol(cell sexp,
              char *buf,
              ssize_t rem,
-             int depth __unused)
+             int depth ll_unused)
 {
         int i;
         if (!symbol_p(sexp))
@@ -3805,7 +3807,7 @@ described by the second to execute the program in the first.
 void
 compile_eval (cell op,
               cell args,
-              boolean tail_p __unused)
+              boolean tail_p ll_unused)
 {
         cell more, sexp, eenv;
         int goto_env_p;
@@ -3835,7 +3837,7 @@ and an optional form to evaluate in the second.
 void
 compile_error (cell op,
                cell args,
-               boolean tail_p __unused)
+               boolean tail_p ll_unused)
 {
         cell id, more, value;
         more = arity(op, args, 1, 1);
@@ -3866,7 +3868,7 @@ for mutation.
 void
 compile_cons (cell op,
               cell args,
-              boolean tail_p __unused)
+              boolean tail_p ll_unused)
 { /* pattern 0; |arity==(O,O)| */
         cell ncar, ncdr;
         arity(op, args, 2, 0);
@@ -3881,7 +3883,7 @@ compile_cons (cell op,
 void
 compile_car (cell op,
              cell args,
-             boolean tail_p __unused)
+             boolean tail_p ll_unused)
 { /* pattern 1; |arity=(OP_PAIR_P)| */
         int comefrom_pair_p;
         arity(op, args, 1, 0);
@@ -3901,7 +3903,7 @@ compile_car (cell op,
 void
 compile_cdr (cell op,
              cell args,
-             boolean tail_p __unused)
+             boolean tail_p ll_unused)
 {
         int comefrom_pair_p;
         arity(op, args, 1, 0);
@@ -3921,7 +3923,7 @@ compile_cdr (cell op,
 void
 compile_null_p (cell op,
                 cell args,
-                boolean tail_p __unused)
+                boolean tail_p ll_unused)
 { /* pattern 2 = predicate */
         arity(op, args, 1, 0);
         compile_expression(cts_pop(), 0);
@@ -3931,7 +3933,7 @@ compile_null_p (cell op,
 void
 compile_pair_p (cell op,
                 cell args,
-                boolean tail_p __unused)
+                boolean tail_p ll_unused)
 {
         arity(op, args, 1, 0);
         compile_expression(cts_pop(), 0);
@@ -3941,7 +3943,7 @@ compile_pair_p (cell op,
 void
 compile_set_car_m (cell op,
                    cell args,
-                   boolean tail_p __unused)
+                   boolean tail_p ll_unused)
 { /* pattern 3 = |arity=(OP_PAIR_P, O)| */
         cell value, object;
         int goto_pair_p;
@@ -3963,7 +3965,7 @@ compile_set_car_m (cell op,
 void
 compile_set_cdr_m (cell op,
                    cell args,
-                   boolean tail_p __unused)
+                   boolean tail_p ll_unused)
 {
         cell value, object;
         int goto_pair_p;
@@ -3989,7 +3991,7 @@ the flag given to the final opcode.
 void
 compile_set_m (cell op,
                cell args,
-               boolean tail_p __unused)
+               boolean tail_p ll_unused)
 { /* pattern 4, |arity = (OP_ENV_P #<> symbol?)| */
         cell env, name, value;
         int goto_env_p;
@@ -4016,7 +4018,7 @@ compile_set_m (cell op,
 void
 compile_define_m (cell op,
                   cell args,
-                  boolean tail_p __unused)
+                  boolean tail_p ll_unused)
 {
         cell env, name, value;
         int goto_env_p;
@@ -4043,7 +4045,7 @@ compile_define_m (cell op,
 void
 compile_env_root (cell op,
                   cell args,
-                  boolean tail_p __unused)
+                  boolean tail_p ll_unused)
 { /* pattern 5 = no args */
         arity(op, args, 0, bfalse);
         emitop(OP_ENV_ROOT);
@@ -4052,7 +4054,7 @@ compile_env_root (cell op,
 void
 compile_env_current (cell op,
                      cell args,
-                     boolean tail_p __unused)
+                     boolean tail_p ll_unused)
 {
         arity(op, args, 0, bfalse);
         emitop(OP_ENV_QUOTE);
@@ -4064,9 +4066,9 @@ implementations above.
 
 @c
 void
-compile_quote (cell op __unused,
+compile_quote (cell op ll_unused,
                cell args,
-               boolean tail_p __unused)
+               boolean tail_p ll_unused)
 {@+
         emitq(args);@+
 }
@@ -4093,7 +4095,7 @@ void compile_quasicompiler (cell, cell, cell, int, boolean);
 void
 compile_quasiquote (cell op,
                     cell args,
-                    boolean tail_p __unused)
+                    boolean tail_p ll_unused)
 { /* pattern Q */
         compile_quasicompiler(op, args, args, 0, bfalse);
 }
@@ -4393,18 +4395,18 @@ llt_alloc_imp (size_t len,
         return r;
 }
 
-@ @d llt_grow(o,l) ((o) = llt_grow_imp((o), (l)))
-@d llt_grow_by(o,d) ((o) = llt_grow_imp((o), (o)->len + (d)))
+@ @d llt_grow(o,d) ((o) = llt_grow_imp((o), (o)->len + (d)))
 @c
 llt_buffer *
 llt_grow_imp (llt_buffer *old,
               size_t len)
 {
         llt_buffer *new;
-        size_t ntotal, ototal;
-        ototal = (old->len * old->size) + sizeof (llt_buffer);
+        size_t ntotal;
         ntotal = (len * old->size) + sizeof (llt_buffer);
         ERR_OOM_P(new = realloc(old, ntotal));
+        bzero((char *) new + sizeof (llt_buffer) + (new->size * new->len),
+              new->size * (len - new->len));
         new->len = len;
         return new;
 }
@@ -4424,7 +4426,7 @@ llt_buffer * llt_copy_refs (cell);
 
 @ @d llt_extend_serial(buf, by, off) do {
         llt_buffer *q = (by);
-        llt_grow_by((buf), q->len);
+        llt_grow((buf), q->len);
         bcopy(q->data, (buf)->data + ((off) * q->size), q->len * q->size);
         (off) += q->len;
         free(q);
@@ -4442,7 +4444,7 @@ llt_serialise (cell obj,
         off = sizeof (cell);
         if (special_p(obj))
                 return r;
-        llt_grow_by(r, sizeof (char) + (sizeof (cell) * 2));
+        llt_grow(r, sizeof (char) + (sizeof (cell) * 2));
         bcopy(&tag(obj), r->data + off, sizeof (char));
         off += 1;
         if (vector_p(obj))
@@ -4460,7 +4462,7 @@ llt_serialise (cell obj,
         if (acdr_p(obj))
                 llt_extend_serial(r, llt_serialise(cdr(obj), offset_p), off);
         if (vector_p(obj)) {
-                llt_grow_by(r, sizeof (cell) * VECTOR_HEAD);
+                llt_grow(r, sizeof (cell) * VECTOR_HEAD);
                 for (i = 1; i <= VECTOR_HEAD; i++) {
                         bcopy(&vector_ref(obj, -i), r->data + off,
                                 sizeof (cell));
@@ -4534,7 +4536,6 @@ end of testing with an argument of 0 to emit exactly one test plan.
 @d tap_again(t, r, m) tap_ok(((t) = ((t) && (r))), (m)) /* intentional
                                                            assignment */
 @d tap_more(t, r, m) (t) &= tap_ok((r), (m))
-@d tap_or(p,m) if (!tap_ok((p),(m)))
 @<Func...@>=
 #ifdef LL_TEST
 void tap_plan (int);
@@ -4666,9 +4667,9 @@ testing_build_probe (cell was_Acc)
 
 @ @c
 void
-compile_testing_probe (cell op __unused,
+compile_testing_probe (cell op ll_unused,
                        cell args,
-                       boolean tail_p __unused)
+                       boolean tail_p ll_unused)
 {
         emitop(OP_PUSH);
         emitq(args);
@@ -4678,9 +4679,9 @@ compile_testing_probe (cell op __unused,
 @ This variant evaluates its run-time arguments first.
 @c
 void
-compile_testing_probe_app (cell op __unused,
+compile_testing_probe_app (cell op ll_unused,
                            cell args,
-                           boolean tail_p __unused)
+                           boolean tail_p ll_unused)
 {
         emitop(OP_PUSH);
         cts_push(args = list_reverse(args, NULL, NULL));
@@ -4790,10 +4791,6 @@ extern llt_fixture Test_Fixtures[]; /* user-defined */
 #define fmsgf(...) test_msgf(buf, fix.name, __VA_ARGS__)
 #define fpmsgf(...) test_msgf(buf, fix->name, __VA_ARGS__)
 
-#define llt_fix_append(o,d) ((o) == NULL    \
-        ? (o) = llt_alloc((d), llt_Fixture) \
-        : llt_grow_by((o), (d)))
-
 boolean llt_main (size_t, llt_Fixture *);
 llt_buffer * llt_prepare (void);
 
@@ -4825,8 +4822,8 @@ they aren't necessary yet.
 
 @ @<Unit test body@>=
 int
-main (int argc __unused,
-      char **argv __unused)
+main (int argc ll_unused,
+      char **argv ll_unused)
 {
         llt_buffer *suite;
         if (argc > 1) {
@@ -4921,7 +4918,7 @@ llt_prepare (void)
         for (t = Test_Fixtures; *t != NULL; t++) {
                 f = (*t)();
                 old = r->len;
-                llt_grow_by(r, f->len);
+                llt_grow(r, f->len);
                 bcopy(f->data, ((llt_Fixture *) r->data) + old,
                         f->len * f->size);
                 free(f);
@@ -4945,8 +4942,8 @@ they need a legacy test script wrapper.
 void test_main (void);
 
 int
-main (int    argc __unused,
-      char **argv __unused)
+main (int    argc ll_unused,
+      char **argv ll_unused)
 {
         volatile boolean first = btrue;
         vm_init();
@@ -5116,7 +5113,7 @@ llt_Grow_Pool_prepare (llt_Fixture *fix)
 
 @ @<Unit test: grow heap...@>=
 void
-llt_Grow_Pool_destroy (llt_Fixture *fix __unused)
+llt_Grow_Pool_destroy (llt_Fixture *fix ll_unused)
 {
         free(CAR);
         free(CDR);
@@ -6520,8 +6517,8 @@ live |vector|s are serialised without recording it.
 
 @<Unit test part: serialise a live |vector| into the fixture@>=
 n = fix->cell_buf->len;
-llt_grow_by(fix->cell_buf, 1);
-llt_grow_by(fix->offset_buf, 1);
+llt_grow(fix->cell_buf, 1);
+llt_grow(fix->offset_buf, 1);
 ((cell *) fix->cell_buf->data)[n] = v;
 ((cell *) fix->offset_buf->data)[n] = vector_offset(v);
 
@@ -6534,7 +6531,7 @@ fix->safe_buf = llt_alloc(0, llt_buffer *);
 VMS = list_reverse_m(VMS, btrue);
 n = 0;
 for (v = VMS; !null_p(v); v = cdr(v), n++) {
-        llt_grow_by(fix->safe_buf, 1);
+        llt_grow(fix->safe_buf, 1);
         ((llt_buffer **) fix->safe_buf->data)[n]
                 = llt_serialise(car(v), bfalse);
 }
@@ -6662,12 +6659,13 @@ llt_GC_Vector__All (void)
                 "UUULLLUUULLLUUU",
                 NULL
         };
-        llt_buffer *r = NULL;
+        llt_buffer *r;
         llt_Fixture *f;
         char **p;
         int i;
+        r = llt_alloc(0, llt_Fixture);
         for (p = test_patterns, i = 0; *p; p++, i++) {
-                llt_fix_append(r, 1);
+                r = llt_grow(r, 1);
                 f = ((llt_Fixture *) r->data) + r->len - 1;
                 llt_GC_Vector_fix(f, __func__);
                 f->suffix = f->pattern = test_patterns[i];
@@ -6792,7 +6790,7 @@ for (i = fix->stack - 1; i > 0; i--) {
 
 @ @<Unit test: environment objects@>=
 void
-llt_Environments_destroy (llt_Fixture *fix __unused)
+llt_Environments_destroy (llt_Fixture *fix ll_unused)
 {
         Env = ((cell *) fix->save_Env->data)[0];
         Acc = VMS = NIL;
@@ -7348,7 +7346,7 @@ llt_Interpreter_destroy (llt_Fixture *fix)
 
 @ @<Unit test: Interpreter@>=
 void
-llt_Interpreter_act (llt_Fixture *fix __unused)
+llt_Interpreter_act (llt_Fixture *fix ll_unused)
 {
         /* TODO: use |Goto_Error| like the environment tests? */
         fix->had_ex_p = bfalse;
@@ -7957,7 +7955,7 @@ llt_Compiler_prepare (llt_Fixture *fix)
 
 @ @<Unit test: Compiler@>=
 void
-llt_Compiler_destroy (llt_Fixture *fix __unused)
+llt_Compiler_destroy (llt_Fixture *fix ll_unused)
 {
         Tmp_Test = NIL;
         Error_Handler = bfalse;
@@ -9403,7 +9401,7 @@ test_main (void)
 
 int
 main (int    argc,
-      char **argv __unused)
+      char **argv ll_unused)
 {
         char wbuf[BUFFER_SEGMENT] = {0};
         vm_init();
@@ -9484,7 +9482,7 @@ assoc_value (cell alist,
 void
 compile_symbol_p (cell op,
                 cell args,
-                boolean tail_p __unused)
+                boolean tail_p ll_unused)
 {
         arity(op, args, 1, 0);
         compile_expression(cts_pop(), 0);
@@ -9496,5 +9494,36 @@ case OP_SYMBOL_P:@/
         Acc = symbol_p(Acc) ? TRUE : FALSE;
         skip(1);
         break;
+
+@ Unix is an awful operating system and everything else is worse.
+
+@<Repair the system headers@>=
+#ifndef ll_noreturn
+#  ifdef __GNUC__ /* \AM clang */
+#    define ll_noreturn __attribute__ ((__noreturn__))
+#  else
+#    ifdef _Noreturn
+#      define ll_noreturn _Noreturn
+#    else
+#      define ll_noreturn /* noisy compiler */
+#    endif
+#  endif
+#endif
+
+#ifndef ll_unused
+#  ifdef __GNUC__ /* \AM clang */
+#    define ll_unused __attribute__ ((__unused__))
+#  else
+#    define ll_unused /* noisy compiler */
+#  endif
+#endif
+
+#ifndef reallocarray /* Catch up... */
+#define reallocarray(o,n,s) realloc((o), (n) * (s))
+#endif
+
+#ifndef strlcpy
+#define strlcpy(d,s,l) ((size_t) snprintf((d), (l), "%s", (s)))
+#endif
 
 @** Index.

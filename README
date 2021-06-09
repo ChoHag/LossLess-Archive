@@ -21,11 +21,17 @@ reduce to the test suite only.
 
 There is no distributable LossLess yet, only a git source repository, so
 the build process requires CWEB to be installed, which is usually part
-of TeXlive (texlive_base on OpenBSD, texlive-binaries on Debian). This
-package is ironically huge given the constraints that TeX was invented
-under.
+of TeXlive (texlive_base in ports on OpenBSD). This package is
+ironically huge given the constraints that TeX was invented under.
 
-With that installed LossLess can be built with:
+Debian's texlive-binaries package includes the ctangle and cweave
+binaries but they're useless without the rest of CWEB which is
+distributed between the texlive-base and texlive-extra-utils
+packages. Install all three.
+
+Advice on the results of any other platforms' butchery is welcome.
+
+With that installed LossLess can be built with BSD or GNU make:
 
     make
 

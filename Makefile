@@ -2,7 +2,7 @@ CTANGLE?= ctangle
 CWEAVE?=  cweave
 PDFTEX?=  pdftex
 TEST?=    prove
-CFLAGS+=  -Wall -Wpedantic -Wextra
+CFLAGS+=  -Wall -Wpedantic -Wextra -I.
 TFLAGS+=  -v
 
 SOURCES:=       lossless.c repl.c
@@ -58,15 +58,15 @@ lossless.pdf: lossless.tex
 	$(PDFTEX) lossless.tex
 
 lossless.tex: lossless.w
-	$(CWEAVE) lossless.w
+	mkdir -p t && $(CWEAVE) lossless.w
 
 lossless: $(OBJECTS)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) -o lossless $(OBJECTS)
 
 $(OBJECTS): $(SOURCES)
 
-$(SOURCES) $(TEST_SOURCES) $(OTHER_SOURCES): t lossless.w
-	$(CTANGLE) lossless.w
+$(SOURCES) $(TEST_SOURCES) $(OTHER_SOURCES): lossless.w
+	mkdir -p t && $(CTANGLE) lossless.w
 
 test: $(TEST_SCRIPTS)
 	$(TEST) $(TFLAGS) -e '' t
@@ -75,16 +75,13 @@ $(TEST_SCRIPTS): $(TEST_OBJECTS)
 
 $(TEST_OBJECTS): $(TEST_SOURCES) $(OTHER_SOURCES)
 
-t:
-	mkdir -p t
-
 .SUFFIXES: .t
 
 .c.t:
-	if echo " $(ALLOC_TEST_SCRIPTS) " | grep -qF " $@ "; then              \
-		$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) -I. llalloc.o -o $@ $<; \
-	else                                                                   \
-		$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) -I. lltest.o -o $@ $<;  \
+	if echo " $(ALLOC_TEST_SCRIPTS) " | grep -qF " $@ "; then          \
+		$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) llalloc.o -o $@ $<; \
+	else                                                               \
+		$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) lltest.o -o $@ $<;  \
 	fi
 
 dist: lossless.pdf $(SOURCES) $(OTHER_SOURCES) $(TEST_SOURCES)
